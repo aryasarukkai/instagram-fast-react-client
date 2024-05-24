@@ -1,3 +1,4 @@
+![Speedgram Logo](landing/logo.png)
 # ⚡ Speedgram ⚡
 
 > The lightning-fast Instagram client for web and desktop, powered by React ⚛️
