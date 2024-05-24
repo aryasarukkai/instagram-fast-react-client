@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css2?family=Georgia&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="icon" type="image/png" href="logo.png">
+    <title>Speedgram - Redirecting...</title>
+    <style>
+        h1 {
+            font-family: Georgia;
+        }
+    </style>
+    <script>
+        setTimeout(function() {
+            window.location.href = "https://github.com/aryasarukkai/instagram-fast-react-client";
+        }, 5000);
+    </script>
+</head>
+<body class="bg-gray-900 text-white">
+    <div class="container mx-auto px-4 py-12 h-screen flex items-center justify-center">
+        <div class="text-center">
+            <h1 class="text-6xl font-bold mb-4 animate-pulse bg-gradient-to-r from-white to-gray-200 bg-clip-text text-transparent">speedgram</h1>
+            <p class="text-xl" id="redirect-message"></p>
+        </div>
+    </div>
+    <script>
+        var redirectMessage = document.getElementById("redirect-message");
+        var countdown = 5;
+        var redirectTimer = setInterval(function() {
+            redirectMessage.innerHTML = "We're going to redirect you to <a href='https://github.com/aryasarukkai/instagram-fast-react-client'>github.com/aryasarukkai/instagram-fast-react-client</a> in " + countdown + " seconds.";
+            countdown--;
+            if (countdown < 0) {
+                clearInterval(redirectTimer);
+                redirectMessage.innerHTML = "Redirecting...";
+            }
+        }, 1000);
+    </script>
+</body>
+</html>
