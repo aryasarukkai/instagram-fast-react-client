@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="landing/logo.png" alt="Speedgram Logo" width="400" height="400" />
+  <img src="landing/logo.png" alt="Speedgram Logo" width="250" height="250" />
   <h1>⚡ Speedgram ⚡</h1>
   <p>The lightning-fast Instagram client for web and desktop, powered by React ⚛️</p>
 </div>
