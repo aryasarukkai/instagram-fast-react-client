@@ -46,6 +46,10 @@ Contributions are what make the open source community such an amazing place to l
 4. Push to the Branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
 
+## 💖 Open-Source References
+
+We took <a href="/private-api">our "private-api"</a> right off <a href="https://github.com/dilame/instagram-private-api">dilame/instagram-private-api</a>, and it is a supporting pillar for this project, so huge thanks to them!
+
 ## ✨ Contributors
 
 - [Arya Sarukkai // @aryasarukkai](https://github.com/aryasarukkai)
