@@ -20,15 +20,20 @@ const LoginPage = () => {
       if (response.data.success) {
         // Save the session for future use
         localStorage.setItem('ig_session', JSON.stringify(response.data.session));
+        notyf.success('Login successful! Redirecting...');
 
         // Redirect to the main app or dashboard
-        window.location.href = '/dashboard';
+        // not yet
       } else {
-        notyf.error('Login failed. Please check your credentials and try again.');
+        notyf.error(response.data.message);
       }
     } catch (error) {
       console.error('Login failed:', error);
-      notyf.error('Login failed. Please check your credentials and try again.');
+      if (error.response && error.response.data && error.response.data.message) {
+        notyf.error(error.response.data.message);
+      } else {
+        notyf.error('An unknown error occurred. Please try again.');
+      }
     }
   };
 
