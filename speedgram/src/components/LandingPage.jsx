@@ -5,7 +5,7 @@ import { faInstagram } from '@fortawesome/free-brands-svg-icons';
 
 const LandingPage = () => {
   return (
-    <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-r from-blue-800 to-green-900 px-4 sm:px-0">
+    <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-r from-blue-800 to-pink-900 px-4 sm:px-0">
       <img src="https://speedgram.dev/logo.png" alt="Speedgram Logo" className="mx-auto h-24 mb-8 rounded-lg" />
       <h1 className="text-5xl sm:text-6xl font-bold mb-8 text-white text-center" style={{ fontFamily: 'Georgia' }}>
         speedgram
