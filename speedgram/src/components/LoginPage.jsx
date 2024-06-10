@@ -1,18 +1,27 @@
-import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Notyf } from 'notyf';
 import 'notyf/notyf.min.css';
+import config from '../config.json';
+import { isLoggedIn } from '../utils';
 
 const LoginPage = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const navigate = useNavigate();
 
   const notyf = new Notyf();
 
+  useEffect(() => {
+    if (isLoggedIn()) {
+      navigate('/home');
+    }
+  }, [navigate]);
+
   const handleLogin = async () => {
     try {
-      const response = await axios.post('https://api.speedgram.dev/login', {
+      const response = await axios.post(`${config.api_url}/login`, {
         username,
         password,
       });
@@ -21,9 +30,7 @@ const LoginPage = () => {
         // Save the session for future use
         localStorage.setItem('ig_session', JSON.stringify(response.data.session));
         notyf.success('Login successful! Redirecting...');
-
-        // Redirect to the main app or dashboard
-        // not yet
+        navigate('/home');
       } else {
         notyf.error(response.data.message);
       }

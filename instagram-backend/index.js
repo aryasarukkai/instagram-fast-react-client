@@ -4,7 +4,7 @@ const { IgApiClient, IgLoginBadPasswordError, IgResponseError } = require('insta
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
@@ -137,6 +137,17 @@ app.get('/direct/thread/:threadId', async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to get thread messages' });
   }
 });
+
+app.get('/profile', async (req, res) => {
+  try {
+    const user = await ig.account.currentUser();
+    res.json({ success: true, user });
+  } catch (error) {
+    console.error('Failed to get profile:', error);
+    res.status(500).json({ success: false, message: 'Failed to get profile' });
+  }
+});
+
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);

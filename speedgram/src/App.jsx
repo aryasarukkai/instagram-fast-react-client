@@ -3,6 +3,11 @@ import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import { TransitionGroup, CSSTransition } from 'react-transition-group';
 import LandingPage from './components/LandingPage';
 import LoginPage from './components/LoginPage';
+import HomePage from './components/HomePage';
+import { library } from '@fortawesome/fontawesome-svg-core';
+import { fas } from '@fortawesome/free-solid-svg-icons';
+
+library.add(fas);
 
 const App = () => {
   return (
@@ -13,6 +18,7 @@ const App = () => {
             <Routes>
               <Route path="/" element={<LandingPage />} />
               <Route path="/login" element={<LoginPage />} />
+              <Route path="/home" element={<HomePage />} />
             </Routes>
           </CSSTransition>
         </TransitionGroup>
