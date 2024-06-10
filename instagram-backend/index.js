@@ -4,7 +4,7 @@ const { IgApiClient, IgLoginBadPasswordError, IgResponseError } = require('insta
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
@@ -40,7 +40,7 @@ app.post('/login', async (req, res) => {
 });
 
 // Middleware to check session
-app.use(async (req, res, next) => {
+const checkSession = async (req, res, next) => {
   if (!req.headers.session) {
     return res.status(401).json({ success: false, message: 'Session is required' });
   }
@@ -51,7 +51,16 @@ app.use(async (req, res, next) => {
     console.error('Session deserialization failed:', error);
     res.status(500).json({ success: false, message: 'Invalid session' });
   }
-});
+};
+
+// Apply the middleware only to routes that require a session
+app.use('/feed', checkSession);
+app.use('/reels', checkSession);
+app.use('/stories', checkSession);
+app.use('/followers', checkSession);
+app.use('/following', checkSession);
+app.use('/direct', checkSession);
+app.use('/profile', checkSession);
 
 // Get User's Posts Feed
 app.get('/feed', async (req, res) => {
@@ -147,7 +156,6 @@ app.get('/profile', async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to get profile' });
   }
 });
-
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
