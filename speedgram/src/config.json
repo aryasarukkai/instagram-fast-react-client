@@ -1,3 +1,4 @@
 {
-    "api_url": "https://instagram-backend.fly.dev/"
+    "api_url": "http://localhost:5000"
   }
+  

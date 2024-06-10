@@ -1,17 +1,13 @@
-import { defineConfig } from 'vite';
-import vue from '@vitejs/plugin-vue';
-import { NodeGlobalsPolyfillPlugin } from '@esbuild-plugins/node-globals-polyfill';
-import { NodeModulesPolyfillPlugin } from '@esbuild-plugins/node-modules-polyfill';
-import rollupNodePolyfills from 'rollup-plugin-node-polyfills';
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import { NodeGlobalsPolyfillPlugin } from '@esbuild-plugins/node-globals-polyfill'
+import { NodeModulesPolyfillPlugin } from '@esbuild-plugins/node-modules-polyfill'
+import rollupNodePolyfills from 'rollup-plugin-node-polyfills'
 
+// https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
-    vue(),
-    NodeGlobalsPolyfillPlugin({
-      process: false,
-      buffer: false,
-    }),
-    NodeModulesPolyfillPlugin(),
+    react(),
   ],
   resolve: {
     alias: {
@@ -22,8 +18,8 @@ export default defineConfig({
     esbuildOptions: {
       plugins: [
         NodeGlobalsPolyfillPlugin({
-          process: false,
-          buffer: false,
+          process: true,
+          buffer: true,
         }),
         NodeModulesPolyfillPlugin(),
       ],
@@ -34,4 +30,4 @@ export default defineConfig({
       plugins: [rollupNodePolyfills()],
     },
   },
-});
+})
