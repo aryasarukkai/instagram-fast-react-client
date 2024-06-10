@@ -1,4 +1,6 @@
-import { IgApiClient, IgLoginBadPasswordError, IgResponseError } from 'instagram-private-api';
+import { IgApiClient, IgLoginBadPasswordError, IgResponseError, IgCheckpointError } from 'instagram-private-api';
+import Bluebird from 'bluebird';
+import inquirer from 'inquirer';
 
 const ig = new IgApiClient();
 
@@ -8,14 +10,14 @@ export const login = async (username, password) => {
   try {
     await ig.simulate.preLoginFlow();
     const loggedInUser = await ig.account.login(username, password);
-    await ig.simulate.postLoginFlow();
+    process.nextTick(async () => await ig.simulate.postLoginFlow());
 
     // Save the session for future use
-    const session = ig.state.serialize();
+    const session = await ig.state.serialize();
     // Remove sensitive data
     delete session.constants;
 
-    return { success: true, session };
+    return { success: true, session, user: loggedInUser };
   } catch (error) {
     console.error('Login failed:', error);
 
@@ -23,10 +25,29 @@ export const login = async (username, password) => {
       throw new Error('The username or password you entered is incorrect. Please try again.');
     } else if (error instanceof IgResponseError && error.response.statusCode === 400 && error.response.body.message.includes("username")) {
       throw new Error('The username you entered doesn\'t appear to belong to an account. Please check your username and try again.');
+    } else if (error instanceof IgCheckpointError) {
+      await handleCheckpoint();
     } else {
       throw new Error('An unknown error occurred. Please try again later.');
     }
   }
+};
+
+const handleCheckpoint = async () => {
+  console.log(ig.state.checkpoint); // Checkpoint info here
+
+  await ig.challenge.auto(true); // Requesting SMS-code or click "It was me" button
+  console.log(ig.state.checkpoint); // Challenge info here
+
+  const { code } = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'code',
+      message: 'Enter code',
+    },
+  ]);
+
+  console.log(await ig.challenge.sendSecurityCode(code));
 };
 
 export const deserializeSession = async (session) => {

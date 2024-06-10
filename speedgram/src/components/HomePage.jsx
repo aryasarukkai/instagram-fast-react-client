@@ -32,7 +32,7 @@ const HomePage = () => {
       <FloatingToolbar />
       <div className="w-full max-w-4xl p-4 mt-8">
         {error && <div className="text-red-500 mb-4">{error}</div>}
-        <h2 className="text-2xl font-bold mb-4">Feed</h2>
+        <h2 className="text-2xl font-bold mb-4">My Feed</h2>
         <div className="space-y-4 overflow-auto h-[75vh]">
           {feed.map((item, index) => (
             <div key={index} className="bg-white text-black p-4 rounded-lg shadow-md">

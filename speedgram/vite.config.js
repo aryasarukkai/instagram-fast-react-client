@@ -8,8 +8,8 @@ export default defineConfig({
   plugins: [
     vue(),
     NodeGlobalsPolyfillPlugin({
-      process: true,
-      buffer: true,
+      process: false,
+      buffer: false,
     }),
     NodeModulesPolyfillPlugin(),
   ],
@@ -22,8 +22,8 @@ export default defineConfig({
     esbuildOptions: {
       plugins: [
         NodeGlobalsPolyfillPlugin({
-          process: true,
-          buffer: true,
+          process: false,
+          buffer: false,
         }),
         NodeModulesPolyfillPlugin(),
       ],
