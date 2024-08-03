@@ -48,7 +48,7 @@ Contributions are what make the open source community such an amazing place to l
 
 ## 💖 Open-Source References
 
-We took <a href="/private-api">our "private-api"</a> right off <a href="https://github.com/dilame/instagram-private-api">dilame/instagram-private-api</a>, and it is a supporting pillar for this project, so huge thanks to them!
+We are utilizing API endpoints that have been taken right off <a href="https://github.com/subzeroid/instagrapi">subzeroid/instagrapi</a></a> and we adapted them to JS. It is a supporting pillar for this project, so huge thanks to them!
 
 ## ✨ Contributors
 

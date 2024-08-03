@@ -1,31 +1,32 @@
 import React, { useEffect, useState } from 'react';
-import { getFeed, deserializeSession } from '../instagramService'; // Update the import path as needed
+import { getFeed, deserializeSession } from '../instagramService';
 import FloatingToolbar from './FloatingToolbar';
 import { Notyf } from 'notyf';
 import 'notyf/notyf.min.css';
+
 const notyf = new Notyf();
+
 const HomePage = () => {
   const [feed, setFeed] = useState([]);
   const [error, setError] = useState('');
 
-  const session = JSON.parse(localStorage.getItem('ig_session'));
-
   useEffect(() => {
     const fetchData = async () => {
       try {
-        await deserializeSession(session);
+        const session = JSON.parse(localStorage.getItem('ig_session'));
+        deserializeSession(session);
 
         const feedResponse = await getFeed();
         setFeed(feedResponse.items);
       } catch (error) {
         console.error('Failed to fetch data:', error);
         notyf.error(error.message);
-        
+        setError(error.message);
       }
     };
 
     fetchData();
-  }, [session]);
+  }, []);
 
   return (
     <div className="flex flex-col items-center min-h-screen bg-gradient-to-r from-black to-pink-900 text-white">

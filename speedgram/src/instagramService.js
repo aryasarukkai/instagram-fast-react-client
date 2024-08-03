@@ -1,126 +1,190 @@
-import { IgApiClient, IgLoginBadPasswordError, IgResponseError } from 'instagram-private-api';
+// instagramService.js
 
-const ig = new IgApiClient();
+import axios from 'axios';
+import { v4 as uuidv4 } from 'uuid';
+
+const API_URL = 'https://i.instagram.com/api/v1/';
+const USER_AGENT = 'Instagram 76.0.0.15.395 Android (24/7.0; 640dpi; 1440x2560; samsung; SM-G930F; herolte; samsungexynos8890; en_US; 138226743)';
+
+let session = null;
+
+const generateDeviceId = () => uuidv4();
+
+async function generateSignature(data) {
+  const encoder = new TextEncoder();
+  const key = encoder.encode('68a04945eb02970e2e8d15266fc256f7');
+  const message = encoder.encode(data);
+
+  const cryptoKey = await window.crypto.subtle.importKey(
+    'raw',
+    key,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+
+  const signature = await window.crypto.subtle.sign(
+    'HMAC',
+    cryptoKey,
+    message
+  );
+
+  return Array.from(new Uint8Array(signature))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function createPayload(data) {
+  const signature = await generateSignature(JSON.stringify(data));
+  return `signed_body=${signature}.${encodeURIComponent(JSON.stringify(data))}`;
+}
 
 export const login = async (username, password) => {
-  ig.state.generateDevice(username);
+  const deviceId = generateDeviceId();
+  const data = {
+    username,
+    password,
+    device_id: deviceId,
+    login_attempt_count: '0'
+  };
+
+  const payload = await createPayload(data);
 
   try {
-    await ig.simulate.preLoginFlow();
-    const loggedInUser = await ig.account.login(username, password);
-    await ig.simulate.postLoginFlow();
+    const response = await axios.post(`${API_URL}accounts/login/`, payload, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
 
-    // Save the session for future use
-    const session = ig.state.serialize();
-    // Remove sensitive data
-    delete session.constants;
-
-    return { success: true, session };
-  } catch (error) {
-    console.error('Login failed:', error);
-
-    if (error instanceof IgLoginBadPasswordError) {
-      throw new Error('The username or password you entered is incorrect. Please try again.');
-    } else if (error instanceof IgResponseError && error.response.statusCode === 400 && error.response.body.message.includes("username")) {
-      throw new Error('The username you entered doesn\'t appear to belong to an account. Please check your username and try again.');
+    if (response.status === 200) {
+      session = response.data;
+      return { success: true, session: response.data };
     } else {
-      throw new Error('An unknown error occurred. Please try again later.');
+      return { success: false, message: 'Login failed' };
     }
+  } catch (error) {
+    console.error("An error occurred:", error);
+    return { success: false, message: error.response?.data?.message || 'An unknown error occurred' };
   }
 };
 
-export const deserializeSession = async (session) => {
-  try {
-    await ig.state.deserialize(session);
-  } catch (error) {
-    console.error('Session deserialization failed:', error);
-    throw new Error('Invalid session');
-  }
+export const deserializeSession = (sessionData) => {
+  session = sessionData;
 };
 
 export const getFeed = async () => {
+  if (!session) {
+    throw new Error('Not logged in');
+  }
+
   try {
-    const feed = ig.feed.timeline();
-    const items = await feed.items();
-    return { success: true, items };
+    const response = await axios.get(`${API_URL}feed/timeline/`, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Authorization': `Bearer ${session.token}`
+      }
+    });
+
+    return response.data;
   } catch (error) {
-    console.error('Failed to get feed:', error);
-    throw new Error('Failed to get feed');
+    console.error("An error occurred:", error);
+    throw error;
   }
 };
 
-export const getReels = async () => {
+export const getUserInfo = async (username) => {
+  if (!session) {
+    throw new Error('Not logged in');
+  }
+
   try {
-    const reelsFeed = ig.feed.reelsTray();
-    const items = await reelsFeed.items();
-    return { success: true, items };
+    const response = await axios.get(`${API_URL}users/${username}/usernameinfo/`, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Authorization': `Bearer ${session.token}`
+      }
+    });
+
+    return response.data;
   } catch (error) {
-    console.error('Failed to get reels:', error);
-    throw new Error('Failed to get reels');
+    console.error("An error occurred:", error);
+    throw error;
   }
 };
 
-export const getStories = async () => {
+export const getDirectMessages = async () => {
+  if (!session) {
+    throw new Error('Not logged in');
+  }
+
   try {
-    const storiesFeed = ig.feed.reelsMedia({ userIds: [ig.state.cookieUserId] });
-    const items = await storiesFeed.items();
-    return { success: true, items };
+    const response = await axios.get(`${API_URL}direct_v2/inbox/`, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Authorization': `Bearer ${session.token}`
+      }
+    });
+
+    return response.data;
   } catch (error) {
-    console.error('Failed to get stories:', error);
-    throw new Error('Failed to get stories');
+    console.error("An error occurred:", error);
+    throw error;
   }
 };
 
-export const getFollowers = async () => {
+export const sendDirectMessage = async (recipientId, message) => {
+  if (!session) {
+    throw new Error('Not logged in');
+  }
+
+  const data = {
+    recipient_users: `[[${recipientId}]]`,
+    client_context: uuidv4(),
+    thread_ids: [],
+    text: message
+  };
+
+  const payload = await createPayload(data);
+
   try {
-    const followersFeed = ig.feed.accountFollowers(ig.state.cookieUserId);
-    const items = await followersFeed.items();
-    return { success: true, items };
+    const response = await axios.post(`${API_URL}direct_v2/threads/broadcast/text/`, payload, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': `Bearer ${session.token}`
+      }
+    });
+
+    return response.data;
   } catch (error) {
-    console.error('Failed to get followers:', error);
-    throw new Error('Failed to get followers');
+    console.error("An error occurred:", error);
+    throw error;
   }
 };
 
-export const getFollowing = async () => {
+export const updateProfile = async (profileData) => {
+  if (!session) {
+    throw new Error('Not logged in');
+  }
+
+  const payload = await createPayload(profileData);
+
   try {
-    const followingFeed = ig.feed.accountFollowing(ig.state.cookieUserId);
-    const items = await followingFeed.items();
-    return { success: true, items };
+    const response = await axios.post(`${API_URL}accounts/edit_profile/`, payload, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': `Bearer ${session.token}`
+      }
+    });
+
+    return response.data;
   } catch (error) {
-    console.error('Failed to get following:', error);
-    throw new Error('Failed to get following');
+    console.error("An error occurred:", error);
+    throw error;
   }
 };
 
-export const getInbox = async () => {
-  try {
-    const inboxFeed = ig.feed.directInbox();
-    const threads = await inboxFeed.items();
-    return { success: true, threads };
-  } catch (error) {
-    console.error('Failed to get inbox:', error);
-    throw new Error('Failed to get inbox');
-  }
-};
-
-export const getThreadMessages = async (threadId) => {
-  try {
-    const thread = ig.entity.directThread(threadId);
-    const messages = await thread.items();
-    return { success: true, messages };
-  } catch (error) {
-    console.error('Failed to get thread messages:', error);
-    throw new Error('Failed to get thread messages');
-  }
-};
-
-export const getCurrentUserProfile = async () => {
-  try {
-    const user = await ig.account.currentUser();
-    return { success: true, user };
-  } catch (error) {
-    console.error('Failed to get profile:', error);
-    throw new Error('Failed to get profile');
-  }
-};
+// add some more but like later

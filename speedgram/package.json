@@ -17,17 +17,20 @@
     "@fortawesome/free-solid-svg-icons": "^6.5.2",
     "@fortawesome/react-fontawesome": "^0.2.2",
     "@vitejs/plugin-vue": "^5.0.5",
-    "axios": "^1.7.2",
+    "axios": "^1.7.3",
+    "crypto": "^1.0.1",
     "image-size": "^1.1.1",
     "instagram-private-api": "^1.46.1",
     "json-bigint": "^1.0.0",
+    "lucide-react": "^0.424.0",
     "notyf": "^3.10.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.23.1",
     "react-transition-group": "^4.4.5",
     "snakecase-keys": "^8.0.1",
-    "url-regex-safe": "^4.0.0"
+    "url-regex-safe": "^4.0.0",
+    "uuid": "^10.0.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.66",

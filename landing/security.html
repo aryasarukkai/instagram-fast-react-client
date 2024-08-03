@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css2?family=Georgia&family=Red+Hat+Display&family=Cabin&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="icon" type="image/png" href="logo.png">
+    <title>Speedgram Security</title>
+    <style>
+        .glass-effect {
+            background-color: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+        }
+        .animate-button {
+            transition: transform 0.3s ease;
+        }
+        .animate-button:hover {
+            transform: scale(1.05);
+        }
+        h1, h2 {
+            font-family: Georgia;
+        }
+        p {
+            font-family: Red Hat Display;
+        }
+        a {
+            font-family: Cabin;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white">
+    <div class="container mx-auto px-4 py-12 min-h-screen">
+        <div class="text-center mb-12">
+            <img src="logo.png" alt="Speedgram Logo" class="mx-auto h-24 mb-8 rounded-lg">
+            <h1 class="text-6xl font-bold mb-4 bg-gradient-to-r from-white to-gray-200 bg-clip-text text-transparent">speedgram</h1>
+        </div>
+        <div class="max-w-3xl mx-auto glass-effect p-8 rounded-lg">
+            <h2 class="text-3xl font-bold mb-6">Our Commitment to Your Security and Privacy</h2>
+            
+            <section class="mb-8">
+                <h3 class="text-2xl font-bold mb-4">Data Handling</h3>
+                <p class="mb-4">At Speedgram, we prioritize the security and privacy of your data. Here's how we handle your information:</p>
+                <ul class="list-disc list-inside mb-4">
+                    <li>We do not store your Instagram login credentials on our servers.</li>
+                    <li>Your session data is stored locally on your device and is encrypted.</li>
+                    <li>We do not have access to your direct messages or personal Instagram data.</li>
+                    <li>Any data transmitted between our app and Instagram's servers is done using secure, encrypted connections.</li>
+                </ul>
+            </section>
+
+            <section class="mb-8">
+                <h3 class="text-2xl font-bold mb-4">Security Practices</h3>
+                <p class="mb-4">We employ several security measures to ensure the safety of your data:</p>
+                <ul class="list-disc list-inside mb-4">
+                    <li>End-to-end encryption for all communications.</li>
+                    <li>Regular security audits and updates to our codebase.</li>
+                    <li>Strict access controls and authentication measures.</li>
+                    <li>Compliance with industry-standard security protocols.</li>
+                </ul>
+            </section>
+
+            <section class="mb-8">
+                <h3 class="text-2xl font-bold mb-4">Transparency</h3>
+                <p class="mb-4">We believe in being transparent about our practices:</p>
+                <ul class="list-disc list-inside mb-4">
+                    <li>Our source code is open and available for review.</li>
+                    <li>We provide clear information about how our app interacts with Instagram's API.</li>
+                    <li>We promptly disclose any changes to our data handling or security practices.</li>
+                </ul>
+            </section>
+
+            <section>
+                <h3 class="text-2xl font-bold mb-4">Your Control</h3>
+                <p class="mb-4">We empower you to maintain control over your data:</p>
+                <ul class="list-disc list-inside mb-4">
+                    <li>You can easily log out and clear all local data at any time.</li>
+                    <li>We provide options to customize your privacy settings within the app.</li>
+                    <li>You have the right to request deletion of any data associated with your account.</li>
+                </ul>
+            </section>
+        </div>
+        <div class="text-center mt-8">
+            <a href="https://web.speedgram.dev" class="glass-effect hover:bg-gray-700 text-white font-cabin font-bold py-2 px-4 rounded animate-button">Back to SpeedGram</a>
+        </div>
+    </div>
+</body>
+</html>
