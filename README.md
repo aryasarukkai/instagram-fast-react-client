@@ -14,6 +14,10 @@
 - 🔋 Efficient resource usage for longer battery life on laptops
 - 🌐 Can be self-hosted and self-built
 
+## ‼️ Current Issues
+
+- Unable to interact directly with Instagram API endpoints due to CORS policies
+
 ## 🌐 Web App
 
 Speedgram is available as a pre-built web app at [web.speedgram.dev](https://web.speedgram.dev). No installation required!
@@ -24,9 +28,11 @@ For detailed instructions on self-hosting and building Speedgram, please refer t
 
 ## 🛣️ Roadmap
 
-Speedgram is currently a work in progress, with an estimated completion date of August 10th, 2024. Here's what we're working on:
+Speedgram is currently a work in progress, with an estimated completion date of October 10th, 2024. Here's what we're working on:
 
 - [ ] Create web interface
+- [ ] Create a browser extension for Chrome, Firefox, and Safari that enable CORS interactions.
+- [ ] Create a bundled Desktop and Mobile distribution that contain a self-regulated CORS proxy.
 - [ ] Fetch and display posts
 - [ ] Handle like and comment interactions
 - [ ] Implement Instagram DM/direct
