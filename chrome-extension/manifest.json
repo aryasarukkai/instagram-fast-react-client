@@ -1,0 +1,28 @@
+{
+    "manifest_version": 3,
+    "name": "SpeedGram CORS",
+    "version": "1.0",
+    "description": "A proxy for Instagram API requests",
+    "permissions": [
+      "webRequest",
+      "declarativeNetRequest"
+    ],
+    "host_permissions": [
+      "https://i.instagram.com/*",
+      "https://www.instagram.com/*"
+    ],
+    "background": {
+      "service_worker": "background.js"
+    },
+    "externally_connectable": {
+      "matches": ["*://localhost/*", "*://speedgram.dev/*"]
+    },
+    "declarative_net_request": {
+      "rule_resources": [{
+        "id": "ruleset_1",
+        "enabled": true,
+        "path": "rules.json"
+      }]
+    }
+  }
+  

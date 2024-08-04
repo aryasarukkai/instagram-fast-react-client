@@ -21,6 +21,7 @@
     "crypto": "^1.0.1",
     "image-size": "^1.1.1",
     "instagram-private-api": "^1.46.1",
+    "js-cookie": "^3.0.5",
     "json-bigint": "^1.0.0",
     "lucide-react": "^0.424.0",
     "notyf": "^3.10.0",

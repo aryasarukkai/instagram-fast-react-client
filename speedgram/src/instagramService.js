@@ -1,46 +1,56 @@
-// instagramService.js
-
-import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 
 const API_URL = 'https://i.instagram.com/api/v1/';
 const USER_AGENT = 'Instagram 76.0.0.15.395 Android (24/7.0; 640dpi; 1440x2560; samsung; SM-G930F; herolte; samsungexynos8890; en_US; 138226743)';
 
-
 let session = null;
+let csrfToken = null;
+let cookies = '';
 
 const generateDeviceId = () => uuidv4();
 
-async function generateSignature(data) {
-  const encoder = new TextEncoder();
-  const key = encoder.encode('68a04945eb02970e2e8d15266fc256f7');
-  const message = encoder.encode(data);
-
-  const cryptoKey = await window.crypto.subtle.importKey(
-    'raw',
-    key,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-
-  const signature = await window.crypto.subtle.sign(
-    'HMAC',
-    cryptoKey,
-    message
-  );
-
-  return Array.from(new Uint8Array(signature))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
+async function sendMessageToExtension(message) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage('afhanfmghmpepaadkdoohlkbnincmneo', message, response => {
+      if (chrome.runtime.lastError) {
+        reject(chrome.runtime.lastError);
+      } else {
+        resolve(response);
+      }
+    });
+  });
 }
 
+
 async function createPayload(data) {
-  const signature = await generateSignature(JSON.stringify(data));
-  return `signed_body=${signature}.${encodeURIComponent(JSON.stringify(data))}`;
+  return sendMessageToExtension({
+    action: 'createPayload',
+    data: data
+  });
+}
+
+async function fetchCsrfToken() {
+  const response = await sendMessageToExtension({
+    action: 'makeRequest',
+    method: 'GET',
+    url: 'https://www.instagram.com/',
+    headers: {
+      'User-Agent': USER_AGENT
+    }
+  });
+
+  const csrfTokenMatch = response.data.match(/"csrf_token":"(.*?)"/);
+  if (csrfTokenMatch) {
+    csrfToken = csrfTokenMatch[1];
+    cookies = response.headers['set-cookie'].join('; ');
+  } else {
+    throw new Error('Unable to fetch CSRF token');
+  }
 }
 
 export const login = async (username, password) => {
+  await fetchCsrfToken();
+
   const deviceId = generateDeviceId();
   const data = {
     username,
@@ -52,10 +62,17 @@ export const login = async (username, password) => {
   const payload = await createPayload(data);
 
   try {
-    const response = await axios.post(`${API_URL}accounts/login/`, payload, {
+    const response = await sendMessageToExtension({
+      action: 'makeRequest',
+      method: 'POST',
+      url: `${API_URL}accounts/login/`,
+      data: payload,
       headers: {
         'User-Agent': USER_AGENT,
-        'Content-Type': 'application/x-www-form-urlencoded'
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-CSRFToken': csrfToken,
+        'X-Requested-With': 'XMLHttpRequest',
+        'Cookie': cookies
       }
     });
 
@@ -67,7 +84,7 @@ export const login = async (username, password) => {
     }
   } catch (error) {
     console.error("An error occurred:", error);
-    return { success: false, message: error.response?.data?.message || 'An unknown error occurred' };
+    return { success: false, message: error.message || 'An unknown error occurred' };
   }
 };
 
@@ -81,10 +98,15 @@ export const getFeed = async () => {
   }
 
   try {
-    const response = await axios.get(`${API_URL}feed/timeline/`, {
+    const response = await sendMessageToExtension({
+      action: 'makeRequest',
+      method: 'GET',
+      url: `${API_URL}feed/timeline/`,
       headers: {
         'User-Agent': USER_AGENT,
-        'Authorization': `Bearer ${session.token}`
+        'Authorization': `Bearer ${session.token}`,
+        'X-CSRFToken': csrfToken,
+        'Cookie': cookies
       }
     });
 
@@ -101,10 +123,15 @@ export const getUserInfo = async (username) => {
   }
 
   try {
-    const response = await axios.get(`${API_URL}users/${username}/usernameinfo/`, {
+    const response = await sendMessageToExtension({
+      action: 'makeRequest',
+      method: 'GET',
+      url: `${API_URL}users/${username}/usernameinfo/`,
       headers: {
         'User-Agent': USER_AGENT,
-        'Authorization': `Bearer ${session.token}`
+        'Authorization': `Bearer ${session.token}`,
+        'X-CSRFToken': csrfToken,
+        'Cookie': cookies
       }
     });
 
@@ -121,10 +148,15 @@ export const getDirectMessages = async () => {
   }
 
   try {
-    const response = await axios.get(`${API_URL}direct_v2/inbox/`, {
+    const response = await sendMessageToExtension({
+      action: 'makeRequest',
+      method: 'GET',
+      url: `${API_URL}direct_v2/inbox/`,
       headers: {
         'User-Agent': USER_AGENT,
-        'Authorization': `Bearer ${session.token}`
+        'Authorization': `Bearer ${session.token}`,
+        'X-CSRFToken': csrfToken,
+        'Cookie': cookies
       }
     });
 
@@ -150,11 +182,17 @@ export const sendDirectMessage = async (recipientId, message) => {
   const payload = await createPayload(data);
 
   try {
-    const response = await axios.post(`${API_URL}direct_v2/threads/broadcast/text/`, payload, {
+    const response = await sendMessageToExtension({
+      action: 'makeRequest',
+      method: 'POST',
+      url: `${API_URL}direct_v2/threads/broadcast/text/`,
+      data: payload,
       headers: {
         'User-Agent': USER_AGENT,
         'Content-Type': 'application/x-www-form-urlencoded',
-        'Authorization': `Bearer ${session.token}`
+        'Authorization': `Bearer ${session.token}`,
+        'X-CSRFToken': csrfToken,
+        'Cookie': cookies
       }
     });
 
@@ -173,11 +211,17 @@ export const updateProfile = async (profileData) => {
   const payload = await createPayload(profileData);
 
   try {
-    const response = await axios.post(`${API_URL}accounts/edit_profile/`, payload, {
+    const response = await sendMessageToExtension({
+      action: 'makeRequest',
+      method: 'POST',
+      url: `${API_URL}accounts/edit_profile/`,
+      data: payload,
       headers: {
         'User-Agent': USER_AGENT,
         'Content-Type': 'application/x-www-form-urlencoded',
-        'Authorization': `Bearer ${session.token}`
+        'Authorization': `Bearer ${session.token}`,
+        'X-CSRFToken': csrfToken,
+        'Cookie': cookies
       }
     });
 
@@ -188,4 +232,4 @@ export const updateProfile = async (profileData) => {
   }
 };
 
-// add some more but like later
+// Add more functions as needed

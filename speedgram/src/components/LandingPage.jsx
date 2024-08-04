@@ -1,11 +1,30 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faInstagram } from '@fortawesome/free-brands-svg-icons';
+import Cookies from 'js-cookie';
 
 const LandingPage = () => {
+  const [showPopup, setShowPopup] = useState(false);
+
+  useEffect(() => {
+    const extensionAcknowledged = Cookies.get('extensionAcknowledged');
+    if (!extensionAcknowledged) {
+      setShowPopup(true);
+    }
+  }, []);
+
+  const handleInstall = () => {
+    window.open('https://chrome.google.com/webstore/detail/ext-id', '_blank');
+  };
+
+  const handleAlreadyInstalled = () => {
+    Cookies.set('extensionAcknowledged', 'true', { expires: 365 }); // Cookie expires in 1 year
+    setShowPopup(false);
+  };
+
   return (
-    <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-r from-blue-800 to-pink-900 px-4 sm:px-0">
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-r from-blue-800 to-pink-900 px-4 sm:px-0">
       <img src="https://speedgram.dev/logo.png" alt="Speedgram Logo" className="mx-auto h-24 mb-8 rounded-lg" />
       <h1 className="text-5xl sm:text-6xl font-bold mb-8 text-white text-center" style={{ fontFamily: 'Georgia' }}>
         speedgram
@@ -17,6 +36,31 @@ const LandingPage = () => {
         <FontAwesomeIcon icon={faInstagram} className="mr-2" />
         Log In with Instagram
       </Link>
+
+      {showPopup && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-black rounded-lg p-8 max-w-md w-full transform transition-all duration-300 ease-in-out scale-90 opacity-0 animate-popup">
+            <h3 className="text-2xl font-bold mb-4 text-white">Extension Required</h3>
+            <p className="mb-6 text-white">
+              To use Speedgram, you need to install our Chrome extension. This extension acts as a local CORS proxy for Instagram API interactions, enabling access to features that the web version cannot generally access.
+            </p>
+            <div className="flex justify-end space-x-4">
+              <button
+                onClick={handleAlreadyInstalled}
+                className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded"
+              >
+                I've Already Installed
+              </button>
+              <button
+                onClick={handleInstall}
+                className="bg-blue-900 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded"
+              >
+                Install Extension
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
