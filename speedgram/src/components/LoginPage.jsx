@@ -1,5 +1,3 @@
-// LoginPage.jsx
-
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Notyf } from 'notyf';
@@ -29,14 +27,15 @@ const LoginPage = () => {
   const confirmLogin = async () => {
     setShowPopup(false);
     try {
+      console.log('Attempting login...');
       const loginResult = await login(username, password);
+      console.log('Login result:', loginResult);
       
       if (loginResult.success) {
-        localStorage.setItem('ig_session', JSON.stringify(loginResult.session));
         notyf.success('Login successful! Redirecting...');
         navigate('/home');
       } else {
-        notyf.error(loginResult.message);
+        notyf.error(loginResult.message || 'Login failed');
       }
     } catch (error) {
       console.error('Login failed:', error);
@@ -110,7 +109,7 @@ const LoginPage = () => {
           <div className="bg-black rounded-lg p-8 max-w-md w-full transform transition-all duration-300 ease-in-out scale-90 opacity-0 animate-popup">
             <h3 className="text-2xl font-bold mb-4 text-white">Important Information</h3>
             <p className="mb-6 text-white">
-              Speedgram cannot access any information that is sent directly to Instagram. This includes passwords, post interactions, messages, and more. However, your activity on Instagram through Speedgram is simulated as a Samsung mobile device (Galaxy S7) in order to enable access to features that the web version cannot generally access, like themes in messages, music notes, vanish mode, and more.
+              Speedgram cannot access any information that is sent directly to Instagram. This includes passwords, post interactions, messages, and more. However, your activity on Instagram through Speedgram is simulated as a Samsung mobile device in order to enable access to features that the web version cannot generally access, like themes in messages, music notes, vanish mode, and more. <strong><a href="https://github.com/aryasarukkai/instagram-fast-react-client/blob/main/Devices.md">Click here to learn more.</a></strong>
             </p>
             <div className="flex justify-end">
               <button

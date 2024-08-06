@@ -16,8 +16,8 @@
 
 ## ‼️ Current Issues
 
-- Unable to interact directly with Instagram API endpoints due to CORS policies
-- Proposed Solution: Use a browser extension to force CORS on web and bundle a express CORS proxy on electron build
+- ~~Unable to interact directly with Instagram API endpoints due to CORS policies~~ [Resolved using a Chrome Extension, which will be bundled with Electron Desktop application and mobile application.]
+- API Requests are being refused with error `{"message":"Your version of Instagram is out of date. Please upgrade your app to log in to Instagram.","status":"fail","error_type":"needs_upgrade"}`
 
 ## 🌐 Web App
 

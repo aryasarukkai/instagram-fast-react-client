@@ -17,7 +17,7 @@
       "service_worker": "background.js"
     },
     "externally_connectable": {
-      "matches": ["*://localhost/*", "*://speedgram.dev/*"]
+      "matches": ["*://localhost/*", "*://speedgram.dev/*", "*://4rtvz50v-5173.usw2.devtunnels.ms/*"]
     },
     "declarative_net_request": {
       "rule_resources": [{
