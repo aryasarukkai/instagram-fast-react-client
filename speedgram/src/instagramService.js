@@ -21,7 +21,6 @@ async function sendMessageToExtension(message) {
   });
 }
 
-
 async function createPayload(data) {
   return sendMessageToExtension({
     action: 'createPayload',
@@ -35,17 +34,30 @@ async function fetchCsrfToken() {
     method: 'GET',
     url: 'https://www.instagram.com/',
     headers: {
-      'User-Agent': USER_AGENT
+      'User-Agent': USER_AGENT,
+      'Accept-Encoding': 'gzip, deflate, br, zstd',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
     }
   });
 
-  const csrfTokenMatch = response.data.match(/"csrf_token":"(.*?)"/);
-  if (csrfTokenMatch) {
-    csrfToken = csrfTokenMatch[1];
-    cookies = response.headers['set-cookie'].join('; ');
+  // Extract the CSRF token from the request headers
+  if (response.requestHeaders && response.requestHeaders.Cookie) {
+    const cookieHeader = response.requestHeaders.Cookie;
+    const cookieParts = cookieHeader.split(';');
+    const csrfCookie = cookieParts.find(part => part.trim().startsWith('csrftoken='));
+    if (csrfCookie) {
+      csrfToken = csrfCookie.split('=')[1].trim();
+      cookies = cookieHeader;
+    } else {
+      throw new Error('CSRF token not found in request headers');
+    }
   } else {
-    throw new Error('Unable to fetch CSRF token');
+    console.error('Request headers:', response.requestHeaders);
+    throw new Error('No cookies found in request headers');
   }
+
+  console.log('CSRF Token:', csrfToken);
+  console.log('Cookies:', cookies);
 }
 
 export const login = async (username, password) => {
@@ -77,8 +89,8 @@ export const login = async (username, password) => {
     });
 
     if (response.status === 200) {
-      session = response.data;
-      return { success: true, session: response.data };
+      session = JSON.parse(response.data);
+      return { success: true, session: session };
     } else {
       return { success: false, message: 'Login failed' };
     }
