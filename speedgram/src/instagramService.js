@@ -12,6 +12,9 @@ let cookies = '';
 
 const generateUUID = () => uuidv4().replace(/-/g, '');
 
+
+
+
 const generateDeviceId = () => {
   return 'android-' + CryptoJS.MD5(Math.random().toString()).toString().substring(0, 16);
 };
@@ -72,8 +75,8 @@ export const login = async (username, password) => {
 
     const uuid = generateUUID();
     const phoneId = generateUUID();
-    const androidId = generateDeviceId();
     const deviceId = generateUUID();
+    const androidId = `android-${crypto.SHA256(String(Date.now())).toString().substring(0, 16)}`;
 
     const signedBody = JSON.stringify({
       jazoest: generateJazoest(phoneId),
@@ -102,7 +105,7 @@ export const login = async (username, password) => {
         'X-IG-App-Locale': 'en_US',
         'X-IG-Device-Locale': 'en_US',
         'X-IG-Mapped-Locale': 'en_US',
-        'X-Pigeon-Session-Id': 'UFS-' + generateUUID(),
+        'X-Pigeon-Session-Id': 'UFS-' + generateUUID() + "-1",
         'X-Pigeon-Rawclienttime': (Date.now() / 1000).toFixed(3),
         'X-IG-Connection-Speed': '-1kbps',
         'X-IG-Bandwidth-Speed-KBPS': '-1.000',

@@ -7,7 +7,7 @@
 ## 🚀 Features
 
 - ✨ Beautiful, intuitive UI
-- 🏎️ Blazing fast performance 
+- 🏎️ Blazing fast performance
 - 💬 IGMessenger support for direct messaging
 - 🖥️ Available on web and as a desktop app
 - 🧠 Smart caching for optimal speed
@@ -16,7 +16,7 @@
 
 ## ‼️ Current Issues
 
-- ~~Unable to interact directly with Instagram API endpoints due to CORS policies~~ [Resolved using a Chrome Extension, which will be bundled with Electron Desktop application and mobile application.]
+- ~~Unable to interact directly with Instagram API endpoints due to CORS policies~~ [[Resolved using a Chrome Extension, which will be bundled with Electron Desktop application and mobile application.]](https://github.com/aryasarukkai/instagram-fast-react-client/issues/1)
 - API Requests are being refused with error `{"message":"Your version of Instagram is out of date. Please upgrade your app to log in to Instagram.","status":"fail","error_type":"needs_upgrade"}`
 
 ## 🌐 Web App
@@ -55,7 +55,7 @@ Contributions are what make the open source community such an amazing place to l
 
 ## 💖 Open-Source References
 
-We are utilizing API endpoints that have been taken right off <a href="https://github.com/subzeroid/instagrapi">subzeroid/instagrapi</a></a> and we adapted them to JS. It is a supporting pillar for this project, so huge thanks to them!
+We are utilizing API endpoints that have been taken right off <a href="https://github.com/subzeroid/instagrapi">subzeroid/instagrapi</a> and we adapted them to JS. It is a supporting pillar for this project, so huge thanks to them!
 
 ## ✨ Contributors
 
@@ -65,6 +65,10 @@ We are utilizing API endpoints that have been taken right off <a href="https://g
 ## 📄 License
 
 This project is licensed under the terms of the GNU General Public License v3.0. See `LICENSE` for more information.
+
+## 🤑 Sponsors
+
+- [@fishalook](https://x.com/fishalook)
 
 ## 💬 Contact
 

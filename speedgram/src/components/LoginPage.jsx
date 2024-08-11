@@ -6,8 +6,8 @@ import { isLoggedIn } from '../utils';
 import { Lock } from 'lucide-react';
 import { login } from '../instagramService';
 
-const LoginPage = () => {
-  const [username, setUsername] = useState('');
+const LoginPage = ({ setUsername }) => {
+  const [usernameInput, setUsernameInput] = useState('');
   const [password, setPassword] = useState('');
   const [showPopup, setShowPopup] = useState(false);
   const navigate = useNavigate();
@@ -21,19 +21,28 @@ const LoginPage = () => {
   }, [navigate]);
 
   const handleLogin = async () => {
-    setShowPopup(true);
+    if (usernameInput === '!liveadmin' && password === '!password') {
+      // Simulate successful login
+      notyf.success('Simulated login successful! Redirecting...');
+      localStorage.setItem('isLoggedIn', 'true');
+      setUsername(usernameInput);
+      navigate('/welcome');
+    } else {
+      setShowPopup(true);
+    }
   };
 
   const confirmLogin = async () => {
     setShowPopup(false);
     try {
       console.log('Attempting login...');
-      const loginResult = await login(username, password);
+      const loginResult = await login(usernameInput, password);
       console.log('Login result:', loginResult);
       
       if (loginResult.success) {
         notyf.success('Login successful! Redirecting...');
-        navigate('/home');
+        setUsername(usernameInput);
+        navigate('/welcome');
       } else {
         notyf.error(loginResult.message || 'Login failed');
       }
@@ -58,13 +67,13 @@ const LoginPage = () => {
           <span>This information is securely submitted directly to Instagram.</span>
         </div>
         <div className="flex items-center justify-center mb-6 text-gray-300 text-sm">
-          <span><a href="https://speedgram.dev/security" target="_blank">Click Here to Learn More</a></span>
+          <span><a href="https://speedgram.dev/security" target="_blank" rel="noopener noreferrer">Click Here to Learn More</a></span>
         </div>
         <input
           type="text"
           placeholder="Instagram Username"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
+          value={usernameInput}
+          onChange={(e) => setUsernameInput(e.target.value)}
           className="w-full mb-4 p-2 bg-gray-700 rounded text-white"
           style={{ fontFamily: 'Cabin' }}
         />
@@ -109,7 +118,7 @@ const LoginPage = () => {
           <div className="bg-black rounded-lg p-8 max-w-md w-full transform transition-all duration-300 ease-in-out scale-90 opacity-0 animate-popup">
             <h3 className="text-2xl font-bold mb-4 text-white">Important Information</h3>
             <p className="mb-6 text-white">
-              Speedgram cannot access any information that is sent directly to Instagram. This includes passwords, post interactions, messages, and more. However, your activity on Instagram through Speedgram is simulated as a Samsung mobile device in order to enable access to features that the web version cannot generally access, like themes in messages, music notes, vanish mode, and more. <strong><a href="https://github.com/aryasarukkai/instagram-fast-react-client/blob/main/Devices.md">Click here to learn more.</a></strong>
+              Speedgram cannot access any information that is sent directly to Instagram. This includes passwords, post interactions, messages, and more. However, your activity on Instagram through Speedgram is simulated as a Samsung mobile device in order to enable access to features that the web version cannot generally access, like themes in messages, music notes, vanish mode, and more. <strong><a href="https://github.com/aryasarukkai/instagram-fast-react-client/blob/main/Devices.md" target="_blank" rel="noopener noreferrer">Click here to learn more.</a></strong>
             </p>
             <div className="flex justify-end">
               <button
