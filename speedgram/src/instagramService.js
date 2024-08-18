@@ -17,7 +17,7 @@ const generateDeviceId = () => {
 };
 async function sendMessageToExtension(message) {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage('afhanfmghmpepaadkdoohlkbnincmneo', message, response => {
+    chrome.runtime.sendMessage('njdidabcneoijpjohimfnbjmkbilppnb', message, response => {
       if (chrome.runtime.lastError) {
         reject(chrome.runtime.lastError);
       } else {
