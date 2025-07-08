@@ -52,11 +52,12 @@
 - **Fallback**: Plaintext format on encryption failure (needs improvement)
 
 ### 🐍 Python Demo Implementation
-- **File**: `instagram_demo.py` - Complete Python implementation of the same encryption
-- **Dependencies**: `requests`, `cryptography`, `PyNaCl`
-- **Test Suite**: `test_encryption.py` - Automated testing of encryption functionality
-- **Usage**: `pip install -r requirements.txt && python test_encryption.py`
-- **Documentation**: `PYTHON_DEMO_README.md` - Complete guide for Python implementation
+- **Directory**: `python-demo/` - Organized Python implementation folder
+- **Main File**: `python-demo/instagram_demo.py` - Complete Python implementation
+- **Dependencies**: `python-demo/requirements.txt` - `requests`, `cryptography`, `PyNaCl`
+- **Test Suite**: `python-demo/test_encryption.py` - Automated testing of encryption functionality
+- **Usage**: `cd python-demo && pip install -r requirements.txt && python test_encryption.py`
+- **Documentation**: `python-demo/README.md` - Complete guide for Python implementation
 - **Purpose**: Educational demonstration and testing of encryption algorithm
 
 ### 📋 Next Priorities

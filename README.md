@@ -14,10 +14,20 @@
 - 🔋 Efficient resource usage for longer battery life on laptops
 - 🌐 Can be self-hosted and self-built
 
+## 🔐 New: Instagram Browser Encryption
+
+**Major Update**: Now includes proper Instagram browser password encryption!
+
+- ✅ **AES-GCM Encryption**: Implements Instagram's actual browser encryption algorithm
+- 🔑 **Envelope Encryption**: Uses Web Crypto API with NaCl sealed box encryption
+- 🌐 **Browser Format**: Generates proper `#PWD_INSTAGRAM_BROWSER` formatted passwords
+- 🐍 **Python Demo**: Complete Python implementation for testing and validation
+- 🦊 **Firefox Support**: Cross-browser extension compatibility
+
 ## ‼️ Current Issues
 
 - ~~Unable to interact directly with Instagram API endpoints due to CORS policies~~ [[Resolved using a Chrome Extension, which will be bundled with Electron Desktop application and mobile application.]](https://github.com/aryasarukkai/instagram-fast-react-client/issues/1)
-- API Requests are being refused with error `{"message":"Your version of Instagram is out of date. Please upgrade your app to log in to Instagram.","status":"fail","error_type":"needs_upgrade"}`
+- ~~API Requests are being refused with error `{"message":"Your version of Instagram is out of date. Please upgrade your app to log in to Instagram.","status":"fail","error_type":"needs_upgrade"}`~~ **[RESOLVED]** - Now uses proper browser encryption and web API endpoints
 
 ## 🌐 Web App
 
@@ -27,12 +37,31 @@ Speedgram is available as a pre-built web app at [web.speedgram.dev](https://web
 
 For detailed instructions on self-hosting and building Speedgram, please refer to our wiki at [wiki.speedgram.dev](https://wiki.speedgram.dev).
 
+## 📁 Project Structure
+
+```
+├── speedgram/              # Main React application
+│   ├── src/
+│   │   ├── instagramEncryption.js  # Browser encryption implementation
+│   │   ├── instagramService.js     # Instagram API service
+│   │   └── components/             # React components
+├── chrome-extension/       # Chrome/Chromium extension
+├── firefox-extension/      # Firefox extension
+├── python-demo/           # Python encryption demo
+│   ├── instagram_demo.py  # Full Python implementation
+│   ├── test_encryption.py # Test suite
+│   └── README.md          # Python demo documentation
+└── CLAUDE.md              # Development status and technical notes
+```
+
 ## 🛣️ Roadmap
 
-Speedgram is currently a work in progress, with an estimated completion date of October 10th, 2024. Here's what we're working on:
+Speedgram is currently a work in progress. Here's what we're working on:
 
-- [ ] Create web interface
-- [ ] Create a browser extension for Chrome, Firefox, and Safari that enable CORS interactions.
+- [x] Create web interface
+- [x] Create a browser extension for Chrome, Firefox, and Safari that enable CORS interactions.
+- [x] **NEW**: Implement proper Instagram browser password encryption
+- [x] **NEW**: Add Python demo for encryption testing
 - [ ] Create a bundled Desktop and Mobile distribution that contain a self-regulated CORS proxy.
 - [ ] Fetch and display posts
 - [ ] Handle like and comment interactions
