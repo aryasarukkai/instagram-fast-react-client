@@ -1,10 +1,11 @@
 import { v4 as uuidv4 } from 'uuid';
 import CryptoJS from 'crypto-js';
+import InstagramBrowserEncryption from './instagramEncryption.js';
 
 import { Buffer } from 'buffer/';
 
-const API_URL = 'https://i.instagram.com/api/v1/';
-const USER_AGENT = 'Instagram 200.0.0.24.121 Android (24/7.0; 640dpi; 1440x2392; Samsung; SGH-T849; SGH-T849; hi3660; en_US; 304101669)';
+const API_URL = 'https://www.instagram.com/api/v1/web/';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36';
 
 let session = null;
 let csrfToken = null;
@@ -17,7 +18,16 @@ const generateDeviceId = () => {
 };
 async function sendMessageToExtension(message) {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage('njdidabcneoijpjohimfnbjmkbilppnb', message, response => {
+    // Check if extension is available
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+      reject(new Error('Extension not available'));
+      return;
+    }
+    
+    // Try to detect the extension ID dynamically or use a default
+    const extensionId = window.instagramExtensionId || 'njdidabcneoijpjohimfnbjmkbilppnb';
+    
+    chrome.runtime.sendMessage(extensionId, message, response => {
       if (chrome.runtime.lastError) {
         reject(chrome.runtime.lastError);
       } else {
@@ -41,7 +51,16 @@ async function fetchCsrfToken() {
     url: 'https://www.instagram.com/',
     headers: {
       'User-Agent': USER_AGENT,
-      'Accept-Language': 'en-US',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1'
     }
   });
 
@@ -70,62 +89,58 @@ export const login = async (username, password) => {
   try {
     await fetchCsrfToken();
 
+    // Initialize browser encryption
+    const encryption = new InstagramBrowserEncryption();
+    
+    // Encrypt the password using browser encryption
+    const encryptedPassword = await encryption.encryptPassword(password);
+    
+    console.log('Using encrypted password:', encryptedPassword);
+
     const uuid = generateUUID();
-    const phoneId = generateUUID();
-    const androidId = generateDeviceId();
-    const deviceId = generateUUID();
+    const requestUUID = generateUUID();
 
-    const signedBody = JSON.stringify({
-      jazoest: generateJazoest(phoneId),
-      country_codes: JSON.stringify([{"country_code":"1","source":["default"]}]),
-      phone_id: phoneId,
-      enc_password: `#PWD_INSTAGRAM:0:${Math.floor(Date.now() / 1000)}:${password}`,
-      username,
-      adid: generateUUID(),
-      guid: uuid,
-      device_id: androidId,
-      google_tokens: "[]",
-      login_attempt_count: "0",
-      _csrftoken: csrfToken  // Include CSRF token in the payload
+    // Create the login payload for web browser
+    const loginData = {
+      enc_password: encryptedPassword,
+      username: username,
+      queryParams: '{}',
+      optIntoOneTap: false,
+      requestUUID: requestUUID,
+      _csrftoken: csrfToken
+    };
+
+    // Convert to form data
+    const formData = new URLSearchParams();
+    Object.keys(loginData).forEach(key => {
+      formData.append(key, loginData[key]);
     });
-
-    const payload = `signed_body=SIGNATURE.${encodeURIComponent(signedBody)}`;
 
     const response = await sendMessageToExtension({
       action: 'makeRequest',
       method: 'POST',
-      url: `${API_URL}accounts/login/`,
-      data: payload,
+      url: `${API_URL}accounts/login/ajax/`,
+      data: formData.toString(),
       headers: {
         'User-Agent': USER_AGENT,
-        'Accept-Language': 'en-US',
-        'X-IG-App-Locale': 'en_US',
-        'X-IG-Device-Locale': 'en_US',
-        'X-IG-Mapped-Locale': 'en_US',
-        'X-Pigeon-Session-Id': 'UFS-' + generateUUID(),
-        'X-Pigeon-Rawclienttime': (Date.now() / 1000).toFixed(3),
-        'X-IG-Connection-Speed': '-1kbps',
-        'X-IG-Bandwidth-Speed-KBPS': '-1.000',
-        'X-IG-Bandwidth-TotalBytes-B': '0',
-        'X-IG-Bandwidth-TotalTime-MS': '0',
-        'X-IG-App-Startup-Country': 'US',
-        'X-Bloks-Version-Id': '5f56efad68e1edec7801f630b5c122704ceed7b34a81871aed7dcc6eb811bd7f',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-CSRFToken': csrfToken,
+        'X-Instagram-AJAX': '1',
+        'X-IG-App-ID': '936619743392459',
         'X-IG-WWW-Claim': '0',
-        'X-Bloks-Is-Layout-RTL': 'false',
-        'X-Bloks-Is-Panorama-Enabled': 'true',
-        'X-IG-Device-ID': uuid,
-        'X-IG-Android-ID': androidId,
-        'X-IG-Connection-Type': 'WIFI',
-        'X-IG-Capabilities': '3brTvwE=',
-        'X-IG-App-ID': '567067343352427',
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'Accept-Encoding': 'gzip, deflate',
-        'Host': 'i.instagram.com',
-        'X-FB-HTTP-Engine': 'Liger',
-        'Connection': 'keep-alive',
-        'Content-Length': payload.length.toString(),
+        'X-Requested-With': 'XMLHttpRequest',
+        'Origin': 'https://www.instagram.com',
+        'Referer': 'https://www.instagram.com/',
         'Cookie': cookies,
-        'X-CSRFToken': csrfToken  // Include CSRF token in the headers
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Ch-UA': '"Google Chrome";v="91", "Chromium";v="91", ";Not A Brand";v="99"',
+        'Sec-Ch-UA-Mobile': '?0',
+        'Sec-Ch-UA-Platform': '"Windows"'
       }
     });
 
@@ -133,22 +148,40 @@ export const login = async (username, password) => {
 
     if (response.status === 200) {
       const responseData = JSON.parse(response.data);
-      session = {
-        userId: responseData.logged_in_user.pk,
-        sessionId: responseData.sessionid,
-        csrfToken: csrfToken,
-        rankToken: `${responseData.logged_in_user.pk}_${uuid}`,
-        authorization: response.responseHeaders['ig-set-authorization'],
-      };
+      
+      if (responseData.authenticated) {
+        // Extract session information
+        session = {
+          userId: responseData.userId,
+          sessionId: responseData.sessionid,
+          csrfToken: csrfToken,
+          cookies: cookies,
+          authenticated: true
+        };
 
-      // Save session to browser storage
-      chrome.storage.local.set({ 'igSession': session }, function() {
-        console.log('Session saved to browser storage');
-      });
+        // Save session to browser storage
+        try {
+          if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+            chrome.storage.local.set({ 'igSession': session }, function() {
+              console.log('Session saved to browser storage');
+            });
+          } else {
+            // Fallback to localStorage
+            localStorage.setItem('igSession', JSON.stringify(session));
+            localStorage.setItem('isLoggedIn', 'true');
+            console.log('Session saved to localStorage');
+          }
+        } catch (error) {
+          console.error('Failed to save session:', error);
+        }
 
-      return { success: true, session: session };
+        return { success: true, session: session };
+      } else {
+        return { success: false, message: responseData.message || 'Login failed' };
+      }
     } else {
-      return { success: false, message: 'Login failed: ' + (response.data || 'Unknown error') };
+      const errorData = JSON.parse(response.data);
+      return { success: false, message: errorData.message || 'Login failed' };
     }
   } catch (error) {
     console.error("An error occurred during login:", error);
@@ -183,13 +216,18 @@ export const getFeed = async () => {
       url: `${API_URL}feed/timeline/`,
       headers: {
         'User-Agent': USER_AGENT,
-        'Authorization': `Bearer ${session.token}`,
-        'X-CSRFToken': csrfToken,
-        'Cookie': cookies
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'X-CSRFToken': session.csrfToken,
+        'X-Instagram-AJAX': '1',
+        'X-IG-App-ID': '936619743392459',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': 'https://www.instagram.com/',
+        'Cookie': session.cookies
       }
     });
 
-    return response.data;
+    return JSON.parse(response.data);
   } catch (error) {
     console.error("An error occurred:", error);
     throw error;

@@ -16,12 +16,13 @@ const LandingPage = () => {
   }, []);
 
   const handleInstall = () => {
-    window.open('https://chrome.google.com/webstore/detail/ext-id', '_blank');
+    // TODO: Update with actual extension ID when published
+    window.open('https://github.com/aryasarukkai/instagram-fast-react-client/tree/main/chrome-extension', '_blank');
   };
 
   const handleAlreadyInstalled = () => {
     Cookies.set('extensionAcknowledged', 'true', { expires: 365 }); // Cookie expires in 1 year
-    setShowExtensionPopup(false);s
+    setShowExtensionPopup(false);
   };
 
   const handleBetaAcknowledgment = () => {

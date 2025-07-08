@@ -35,6 +35,9 @@
     "react-router-dom": "^6.26.0",
     "react-transition-group": "^4.4.5",
     "snakecase-keys": "^8.0.1",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-sealedbox-js": "^1.2.0",
+    "tweetnacl-util": "^0.15.1",
     "url-regex-safe": "^4.0.0",
     "uuid": "^10.0.0"
   },
