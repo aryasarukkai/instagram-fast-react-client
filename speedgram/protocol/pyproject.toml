@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Local Instagram protocol engine for SpeedGram"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "brotli>=1.2.0",
   "instagrapi==2.18.8",
+  "zstandard>=0.25.0",
 ]
 
 [project.optional-dependencies]

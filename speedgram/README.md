@@ -3,13 +3,15 @@
 This directory contains the active SpeedGram application: React/Vite, Tauri 2,
 Rust, Stronghold, and a bundled Python 3.12 `instagrapi` sidecar.
 
-The product is moving toward a dual-backend native architecture:
+The product runs a dual-backend native architecture:
 
-- A browser-minted web/Polaris session for broad Instagram web features
-- A stable mobile/instagrapi session for mobile-only capabilities
+- A browser-minted web/Polaris session that powers the core experience today
+  (feed, stories, comments, direct messages, profiles, images)
+- A stable mobile/instagrapi session for mobile-only capabilities and fallback
 
-The embedded web login and encrypted cookie capture are scaffolded, but all
-connected data commands still use the mobile sidecar. See the
+A captured web session (embedded login or manual cookie import) is encrypted in
+Stronghold; core commands route to the sidecar's web backend when it is present,
+and fall back to the mobile backend otherwise. See the
 [repository README](../README.md) for status and roadmap, and
 [AGENTS.md](../AGENTS.md) for implementation constraints and known blockers.
 

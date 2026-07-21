@@ -1,18 +1,23 @@
+import { useEffect, useState } from 'react';
 import { ImageOff } from 'lucide-react';
 import PropTypes from 'prop-types';
-import { initialsFor, toneFor } from '../visualTone';
+import { initialsFor, proxyImage, toneFor } from '../visualTone';
 
-export const Avatar = ({ src, username = '', size = 42, ring = 'none', className = '' }) => (
-  <span className={`avatar ring-${ring}${className ? ` ${className}` : ''}`} style={{ '--avatar-size': `${size}px` }}>
-    {src ? (
-      <img className="avatar-fill" src={src} alt="" loading="lazy" referrerPolicy="no-referrer" />
-    ) : (
-      <span className={`avatar-fill tone-${toneFor(username)}`}>
-        <i style={{ fontSize: Math.max(9, Math.round(size / 3)) }}>{initialsFor(username)}</i>
-      </span>
-    )}
-  </span>
-);
+export const Avatar = ({ src, username = '', size = 42, ring = 'none', className = '' }) => {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [src]);
+  return (
+    <span className={`avatar ring-${ring}${className ? ` ${className}` : ''}`} style={{ '--avatar-size': `${size}px` }}>
+      {src && !failed ? (
+        <img className="avatar-fill" src={proxyImage(src)} alt="" loading="lazy" onError={() => setFailed(true)} />
+      ) : (
+        <span className={`avatar-fill tone-${toneFor(username)}`}>
+          <i style={{ fontSize: Math.max(9, Math.round(size / 3)) }}>{initialsFor(username)}</i>
+        </span>
+      )}
+    </span>
+  );
+};
 
 Avatar.propTypes = {
   className: PropTypes.string,

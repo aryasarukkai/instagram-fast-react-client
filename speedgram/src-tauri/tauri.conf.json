@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; font-src 'self'; img-src 'self' asset: http://asset.localhost data: blob: https://*.cdninstagram.com https://*.fbcdn.net; media-src 'self' blob: https://*.cdninstagram.com https://*.fbcdn.net; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; font-src 'self'; img-src 'self' asset: http://asset.localhost data: blob: https: igimg:; media-src 'self' blob: https:; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

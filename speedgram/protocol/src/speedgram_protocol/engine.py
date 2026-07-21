@@ -8,8 +8,13 @@ from __future__ import annotations
 
 import hashlib
 from importlib.metadata import version
+import json
+import re
 import secrets
 from typing import Any, Callable
+import uuid
+
+import requests
 
 from instagrapi import Client
 from instagrapi.exceptions import (
@@ -28,6 +33,17 @@ from instagrapi.exceptions import (
     RateLimitError,
     TwoFactorRequired,
 )
+
+
+# Web (Polaris) backend constants — the desktop-web app identity.
+_WEB_BASE = "https://www.instagram.com"
+_WEB_APP_ID = "936619743392459"
+_WEB_ASBD_ID = "359341"
+_WEB_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+)
+_WEB_SEC_CH_UA = '"Chromium";v="149", "Google Chrome";v="149", "Not)A;Brand";v="24"'
 
 
 class ProtocolError(ValueError):
@@ -230,6 +246,181 @@ def normalize_comment(comment: Any) -> dict[str, Any]:
         "likeCount": _integer(getattr(comment, "like_count", 0)),
         "liked": bool(getattr(comment, "has_liked", False)),
         "replyTo": _string(getattr(comment, "replied_to_comment_id", None)) or None,
+    }
+
+
+def _web_seconds(value: Any) -> int:
+    """Web/private timestamps are microseconds since epoch; reduce to seconds."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return number // 1_000_000 if number > 10_000_000_000 else number
+
+
+def _web_share(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract a shared post/reel from a DM item into the normalized post shape."""
+    for key in ("media_share", "media"):
+        media = item.get(key)
+        if isinstance(media, dict):
+            share = normalize_timeline_item(media)
+            if share:
+                return share
+    clip = item.get("clip")
+    if isinstance(clip, dict):
+        media = clip.get("clip") if isinstance(clip.get("clip"), dict) else clip
+        share = normalize_timeline_item(media) if isinstance(media, dict) else None
+        if share:
+            return share
+    visual = item.get("visual_media")
+    if isinstance(visual, dict) and isinstance(visual.get("media"), dict):
+        share = normalize_timeline_item(visual["media"])
+        if share:
+            return share
+    # Newer XMA reel/post share cards carry a preview image + target url.
+    for key in ("xma_clip", "xma_media_share", "xma_story_share"):
+        cards = item.get(key)
+        if isinstance(cards, list) and cards and isinstance(cards[0], dict):
+            card = cards[0]
+            preview = card.get("preview_url") or card.get("header_icon_url")
+            if preview:
+                return {
+                    "id": _string(card.get("target_url") or item.get("item_id")),
+                    "kind": "clip",
+                    "user": {
+                        "username": _string(card.get("header_title_text"), "instagram"),
+                        "fullName": "",
+                        "profilePictureUrl": _url(card.get("header_icon_url")),
+                        "verified": False,
+                    },
+                    "caption": _string(card.get("title_text")),
+                    "imageUrl": _url(preview),
+                    "videoUrl": None,
+                    "children": [],
+                }
+    return None
+
+
+def _normalize_web_profile_user(user: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the user object from web_profile_info (GraphQL edge shape)."""
+    return {
+        "id": _string(user.get("id")),
+        "username": _string(user.get("username"), "instagram"),
+        "fullName": _string(user.get("full_name")),
+        "profilePictureUrl": _url(user.get("profile_pic_url_hd") or user.get("profile_pic_url")),
+        "verified": bool(user.get("is_verified", False)),
+        "biography": _string(user.get("biography")),
+        "isPrivate": bool(user.get("is_private", False)),
+        "mediaCount": _integer((user.get("edge_owner_to_timeline_media") or {}).get("count")),
+        "followerCount": _integer((user.get("edge_followed_by") or {}).get("count")),
+        "followingCount": _integer((user.get("edge_follow") or {}).get("count")),
+    }
+
+
+def _normalize_web_grid_media(node: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a profile-grid media node (web GraphQL) into the post shape."""
+    is_video = bool(node.get("is_video"))
+    typename = _string(node.get("__typename"))
+    kind = "video" if is_video else ("carousel" if "Sidecar" in typename else "image")
+    caption_edges = (node.get("edge_media_to_caption") or {}).get("edges") or []
+    caption = _string(caption_edges[0].get("node", {}).get("text")) if caption_edges else ""
+    likes = node.get("edge_liked_by") or node.get("edge_media_preview_like") or {}
+    return {
+        "id": _string(node.get("id")),
+        "code": _string(node.get("shortcode")),
+        "kind": kind,
+        "user": _user_short(node.get("owner")),
+        "caption": caption,
+        "takenAt": _integer(node.get("taken_at_timestamp")),
+        "location": "",
+        "likeCount": _integer(likes.get("count")),
+        "commentCount": _integer((node.get("edge_media_to_comment") or {}).get("count")),
+        "viewCount": _integer(node.get("video_view_count")),
+        "liked": False,
+        "saved": False,
+        "imageUrl": _url(node.get("display_url") or node.get("thumbnail_src")),
+        "videoUrl": _url(node.get("video_url")) if is_video else None,
+        "audio": None,
+        "children": [],
+    }
+
+
+def _web_reply_text(item: dict[str, Any]) -> str | None:
+    quoted = item.get("replied_to_message") or item.get("reply")
+    if isinstance(quoted, dict):
+        return _string(quoted.get("text")) or None
+    return None
+
+
+def _web_reactions(item: dict[str, Any]) -> list[str]:
+    reactions = item.get("reactions")
+    if not isinstance(reactions, dict):
+        return []
+    out: list[str] = []
+    for _ in reactions.get("likes") or []:
+        out.append("❤️")  # red heart, forced emoji presentation
+    for emoji in reactions.get("emojis") or []:
+        value = emoji.get("emoji") if isinstance(emoji, dict) else None
+        if value:
+            out.append(_string(value))
+    return out
+
+
+def _normalize_web_message(message: dict[str, Any], viewer_id: str) -> dict[str, Any]:
+    user_id = _string(message.get("user_id"))
+    return {
+        "id": _string(message.get("item_id") or message.get("id")),
+        "userId": user_id,
+        "mine": bool(viewer_id and user_id == viewer_id),
+        "kind": _string(message.get("item_type"), "text"),
+        "text": _string(message.get("text")),
+        "timestamp": _web_seconds(message.get("timestamp")),
+        "share": _web_share(message),
+        "reply": _web_reply_text(message),
+        "reactions": _web_reactions(message),
+    }
+
+
+def _normalize_web_thread(thread: dict[str, Any], viewer_id: str) -> dict[str, Any]:
+    users = [_user_short(user) for user in (thread.get("users") or []) if isinstance(user, dict)]
+    title = _string(thread.get("thread_title")) or ", ".join(user["username"] for user in users)
+    items = thread.get("items") or []
+    messages = [
+        _normalize_web_message(item, viewer_id)
+        for item in items
+        if isinstance(item, dict) and item.get("item_type") != "action_log"
+    ]
+    last_activity = thread.get("last_activity_at")
+    unread = False
+    last_seen = thread.get("last_seen_at")
+    if isinstance(last_seen, dict) and viewer_id in last_seen:
+        try:
+            unread = int(last_seen[viewer_id].get("timestamp", 0)) < int(last_activity or 0)
+        except (TypeError, ValueError, AttributeError):
+            unread = False
+    return {
+        "id": _string(thread.get("thread_id") or thread.get("id")),
+        "title": title,
+        "users": users,
+        "isGroup": bool(thread.get("is_group", False)),
+        "muted": bool(thread.get("muted", False)),
+        "pending": bool(thread.get("pending", False)),
+        "lastActivityAt": _web_seconds(last_activity),
+        "unread": unread,
+        "messages": list(reversed(messages)),
+    }
+
+
+def _normalize_web_comment(comment: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a comment from the web REST API (raw dict, not an instagrapi model)."""
+    return {
+        "id": _string(comment.get("pk") or comment.get("id")),
+        "user": _user_short(comment.get("user")),
+        "text": _string(comment.get("text")),
+        "createdAt": _timestamp(comment.get("created_at_utc") or comment.get("created_at")),
+        "likeCount": _integer(comment.get("comment_like_count") or comment.get("like_count")),
+        "liked": bool(comment.get("has_liked_comment") or comment.get("has_liked", False)),
+        "replyTo": _string(comment.get("replied_to_comment_id")) or None,
     }
 
 
@@ -833,9 +1024,336 @@ class ProtocolEngine:
             }
         }
 
+    # --- Web (core) backend: the browser-minted session drives www.instagram.com
+    # directly, reusing the same normalizers as the mobile path. ---
+
+    def _web_cookies(self, params: dict[str, Any] | None) -> dict[str, Any]:
+        cookies = (params or {}).get("cookies") or {}
+        if not isinstance(cookies, dict) or not cookies.get("sessionid"):
+            raise ProtocolError("not_authenticated", "No Instagram web session is available.")
+        return cookies
+
+    @staticmethod
+    def _web_headers(cookies: dict[str, Any], referer: str | None = None) -> dict[str, str]:
+        # Mirror a real Chromium web session as closely as possible — Instagram's
+        # spam/automation checks weigh these heavily. Matches the header set
+        # captured from instagram.com in a real browser.
+        return {
+            "User-Agent": _WEB_USER_AGENT,
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            # Accept-Encoding is intentionally omitted so requests/urllib3 advertise
+            # exactly what this build can decode (gzip, deflate, + br/zstd when the
+            # decoders are bundled) — matching Chrome without risking undecodable bodies.
+            "X-IG-App-ID": _WEB_APP_ID,
+            "X-CSRFToken": _string(cookies.get("csrftoken")),
+            "X-ASBD-ID": _WEB_ASBD_ID,
+            "X-IG-WWW-Claim": _string(cookies.get("x-ig-www-claim")) or "0",
+            "X-Requested-With": "XMLHttpRequest",
+            "X-IG-Max-Touch-Points": "0",
+            "Referer": referer or f"{_WEB_BASE}/",
+            "Origin": _WEB_BASE,
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Ch-Ua": _WEB_SEC_CH_UA,
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"macOS"',
+            "Priority": "u=1, i",
+        }
+
+    def _web_send_raw(
+        self,
+        method: str,
+        path: str,
+        cookies: dict[str, Any],
+        data: dict[str, Any] | None = None,
+        referer: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        headers = self._web_headers(cookies, referer=referer)
+        if extra_headers:
+            headers.update(extra_headers)
+        try:
+            response = requests.request(
+                method,
+                f"{_WEB_BASE}{path}",
+                headers=headers,
+                cookies=cookies,
+                data=data,
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            raise ProtocolError("network_error", "Instagram could not be reached.") from exc
+        if response.status_code in (401, 403):
+            raise ProtocolError(
+                "session_expired",
+                "The Instagram web session is no longer valid. Import fresh cookies.",
+            )
+        if response.status_code == 429:
+            raise ProtocolError("rate_limited", "Instagram asked this device to slow down.")
+        return response
+
+    def _web_request(
+        self,
+        method: str,
+        path: str,
+        cookies: dict[str, Any],
+        data: dict[str, Any] | None = None,
+        referer: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        response = self._web_send_raw(method, path, cookies, data, referer, extra_headers)
+        if response.status_code != 200:
+            raise ProtocolError(
+                "web_request_failed", f"Instagram returned status {response.status_code}."
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ProtocolError(
+                "web_request_failed", "Instagram returned an unexpected response."
+            ) from exc
+        return payload if isinstance(payload, dict) else {}
+
+    def _fetch_web_tokens(self, cookies: dict[str, Any]) -> dict[str, str]:
+        """Scrape the fb_dtsg / lsd write tokens Instagram embeds in the page JS.
+        These are required for GraphQL mutations (sending a DM)."""
+        response = self._web_send_raw("GET", "/", cookies)
+        html = response.text if response.status_code == 200 else ""
+
+        def find(*patterns: str) -> str:
+            for pattern in patterns:
+                match = re.search(pattern, html)
+                if match:
+                    return match.group(1)
+            return ""
+
+        return {
+            "fb_dtsg": find(
+                r'\["DTSGInitialData",\[\],\{"token":"([^"]+)"',
+                r'"dtsg":\s*\{\s*"token":\s*"([^"]+)"',
+                r'name="fb_dtsg"\s+value="([^"]+)"',
+            ),
+            "lsd": find(
+                r'\["LSD",\[\],\{"token":"([^"]+)"',
+                r'"lsd":\s*\{\s*"token":\s*"([^"]+)"',
+            ),
+            "rev": find(r'"__spin_r":(\d+)', r'"client_revision":(\d+)', r'"rev":(\d+)'),
+            "spin_t": find(r'"__spin_t":(\d+)'),
+            "spin_b": find(r'"__spin_b":"([^"]+)"', r'"haste_session":"([^"]+)"'),
+            "hs": find(r'"haste_session":"([^"]+)"'),
+        }
+
+    def web_timeline(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        cursor = (params or {}).get("cursor")
+        data = {
+            "reason": "pagination" if cursor else "cold_start_fetch",
+            "is_pull_to_refresh": "0",
+        }
+        if cursor:
+            data["max_id"] = _string(cursor)
+        return normalize_timeline(self._web_request("POST", "/api/v1/feed/timeline/", cookies, data))
+
+    def web_stories(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        payload = self._web_request("GET", "/api/v1/feed/reels_tray/", cookies)
+        return normalize_story_tray(payload, viewer_id=_string(cookies.get("ds_user_id")))
+
+    def web_comments(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        # The feed ids come as "{pk}_{user_id}"; the comments endpoint wants the bare pk.
+        media_id = _string((params or {}).get("mediaId")).split("_", 1)[0]
+        if not media_id:
+            raise ProtocolError("invalid_request", "A media id is required.")
+        payload = self._web_request(
+            "GET",
+            f"/api/v1/media/{media_id}/comments/?can_support_threading=true&permalink_enabled=false",
+            cookies,
+        )
+        raw = payload.get("comments")
+        comments = raw if isinstance(raw, list) else []
+        return {
+            "items": [_normalize_web_comment(c) for c in comments if isinstance(c, dict)],
+            "nextCursor": _string(payload.get("next_min_id")) or None,
+        }
+
+    def web_threads(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        viewer = _string(cookies.get("ds_user_id"))
+        payload = self._web_request("GET", "/api/v1/direct_v2/inbox/?persistentBadging=true&limit=20", cookies)
+        inbox = payload.get("inbox") if isinstance(payload.get("inbox"), dict) else {}
+        threads = inbox.get("threads") if isinstance(inbox.get("threads"), list) else []
+        return {"items": [_normalize_web_thread(t, viewer) for t in threads if isinstance(t, dict)]}
+
+    def web_thread(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        viewer = _string(cookies.get("ds_user_id"))
+        thread_id = _string((params or {}).get("threadId"))
+        if not thread_id:
+            raise ProtocolError("invalid_request", "A thread id is required.")
+        payload = self._web_request(
+            "GET", f"/api/v1/direct_v2/threads/{thread_id}/?limit=40", cookies
+        )
+        thread = payload.get("thread") if isinstance(payload.get("thread"), dict) else payload
+        items = thread.get("items") if isinstance(thread.get("items"), list) else []
+        messages = [
+            _normalize_web_message(m, viewer)
+            for m in items
+            if isinstance(m, dict) and m.get("item_type") != "action_log"
+        ]
+        # API items are newest-first; reverse for top-to-bottom display.
+        return {"items": list(reversed(messages))}
+
+    def web_send(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        viewer = _string(cookies.get("ds_user_id"))
+        thread_id = _string((params or {}).get("threadId"))
+        text = _string((params or {}).get("text")).strip()
+        if not thread_id or not text:
+            raise ProtocolError("invalid_request", "A thread id and message text are required.")
+        tokens = self._fetch_web_tokens(cookies)
+        fb_dtsg = tokens.get("fb_dtsg")
+        if not fb_dtsg:
+            raise ProtocolError(
+                "web_request_failed",
+                "Could not obtain an Instagram send token — try re-importing the session.",
+            )
+        lsd = tokens.get("lsd", "")
+        jazoest = "2" + str(sum(bytearray(fb_dtsg, "utf-8")))
+        offline_threading_id = str(secrets.randbits(63))
+        reply_to = _string((params or {}).get("replyToMessageId")) or None
+        # The REST thread exposes numeric item_ids; the GraphQL `mid.$...` form goes
+        # in reply_to_message_id, the numeric form in replied_to_item_id.
+        is_mid = bool(reply_to and reply_to.startswith("mid."))
+        # Matches the real web client's IGDirectTextSendMutation variables shape.
+        variables = {
+            "ig_thread_igid": thread_id,
+            "offline_threading_id": offline_threading_id,
+            "recipient_igids": None,
+            "replied_to_client_context": None,
+            "replied_to_item_id": None if is_mid else reply_to,
+            "reply_to_message_id": reply_to if is_mid else None,
+            "sampled": None,
+            "text": {"sensitive_string_value": text},
+            "mentions": None,
+            "mentioned_user_ids": None,
+            "commands": None,
+            "forwarded_from_thread_id": None,
+            "is_forwarded_from_own_message": None,
+            "send_attribution": "igd_web_chat_tab:in_thread",
+        }
+        data = {
+            "av": viewer,
+            "__a": "1",
+            "__comet_req": "7",
+            "fb_dtsg": fb_dtsg,
+            "jazoest": jazoest,
+            "lsd": lsd,
+            "__spin_r": tokens.get("rev", ""),
+            "__spin_b": tokens.get("spin_b", ""),
+            "__spin_t": tokens.get("spin_t", ""),
+            "__rev": tokens.get("rev", ""),
+            "__hs": tokens.get("hs", ""),
+            "fb_api_caller_class": "RelayModern",
+            "fb_api_req_friendly_name": "IGDirectTextSendMutation",
+            "server_timestamps": "true",
+            "doc_id": "26911679871773184",
+            "variables": json.dumps(variables, separators=(",", ":")),
+        }
+        extra_headers = {
+            "X-FB-Friendly-Name": "IGDirectTextSendMutation",
+            "X-FB-LSD": lsd,
+            "X-Root-Field-Name": "xdt_send_message",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        response = self._web_send_raw(
+            "POST",
+            "/api/graphql",
+            cookies,
+            data=data,
+            referer=f"{_WEB_BASE}/direct/t/{thread_id}/",
+            extra_headers=extra_headers,
+        )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ProtocolError("web_request_failed", "Instagram rejected the message.") from exc
+        if response.status_code != 200 or payload.get("errors"):
+            raise ProtocolError("web_request_failed", "Instagram did not accept the message.")
+        return {
+            "message": {
+                "id": offline_threading_id,
+                "userId": viewer,
+                "mine": True,
+                "kind": "text",
+                "text": text,
+                "timestamp": 0,
+                "share": None,
+                "reply": None,
+            }
+        }
+
+    def _web_profile_info(self, cookies: dict[str, Any], username: str) -> dict[str, Any]:
+        if not username:
+            raise ProtocolError("invalid_request", "A username is required.")
+        payload = self._web_request(
+            "GET",
+            f"/api/v1/users/web_profile_info/?username={username}",
+            cookies,
+            referer=f"{_WEB_BASE}/{username}/",
+        )
+        user = (payload.get("data") or {}).get("user")
+        if not isinstance(user, dict):
+            raise ProtocolError("web_request_failed", "Instagram returned no profile.")
+        return user
+
+    def web_profile(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        username = _string((params or {}).get("username"))
+        user = self._web_profile_info(cookies, username)
+        return {"user": _normalize_web_profile_user(user)}
+
+    def web_medias(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        username = _string((params or {}).get("username"))
+        user = self._web_profile_info(cookies, username)
+        media = user.get("edge_owner_to_timeline_media") or {}
+        edges = media.get("edges") if isinstance(media.get("edges"), list) else []
+        items = [
+            _normalize_web_grid_media(edge.get("node") or {})
+            for edge in edges
+            if isinstance(edge, dict) and isinstance(edge.get("node"), dict)
+        ]
+        return {"items": items, "nextCursor": None, "hasMore": False, "userId": _string(user.get("id"))}
+
+    def web_account(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        user_id = _string(cookies.get("ds_user_id"))
+        if not user_id:
+            raise ProtocolError("not_authenticated", "The web session has no user id.")
+        payload = self._web_request("GET", f"/api/v1/users/{user_id}/info/", cookies)
+        user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+        return {
+            "id": _string(user.get("pk") or user_id),
+            "username": _string(user.get("username")),
+            "fullName": _string(user.get("full_name")),
+            "profilePictureUrl": user.get("profile_pic_url"),
+        }
+
     def dispatch(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         handlers = {
             "health": self.health,
+            "web.timeline": self.web_timeline,
+            "web.stories": self.web_stories,
+            "web.account": self.web_account,
+            "web.profile": self.web_profile,
+            "web.medias": self.web_medias,
+            "web.comments": self.web_comments,
+            "web.threads": self.web_threads,
+            "web.thread": self.web_thread,
+            "web.send": self.web_send,
             "auth.state": self.auth_state,
             "auth.login": self.auth_login,
             "auth.restore": self.auth_restore,

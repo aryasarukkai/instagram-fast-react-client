@@ -285,6 +285,238 @@ def test_restored_session_keeps_its_saved_device() -> None:
     assert factory.instances[0].device_settings == saved["device_settings"]
 
 
+class FakeResponse:
+    def __init__(self, status_code: int, payload: Any) -> None:
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> Any:
+        return self._payload
+
+
+class FakeRequests:
+    RequestException = Exception
+
+    def __init__(self, response: FakeResponse) -> None:
+        self.response = response
+        self.calls: list[dict[str, Any]] = []
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        self.calls.append({"method": method, "url": url, **kwargs})
+        return self.response
+
+
+def test_web_timeline_uses_the_session_and_normalizes(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    payload = {
+        "feed_items": [
+            {
+                "media_or_ad": {
+                    "id": "9_1",
+                    "media_type": 1,
+                    "user": {"username": "maya"},
+                    "image_versions2": {"candidates": [{"url": "https://cdn/x.jpg"}]},
+                }
+            }
+        ],
+        "next_max_id": "page2",
+        "more_available": True,
+    }
+    fake = FakeRequests(FakeResponse(200, payload))
+    monkeypatch.setattr(engine_module, "requests", fake)
+
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    page = engine.dispatch("web.timeline", {"cookies": {"sessionid": "s", "csrftoken": "t"}})
+
+    assert page["items"][0]["id"] == "9_1"
+    assert page["nextCursor"] == "page2"
+    assert fake.calls[0]["url"].endswith("/api/v1/feed/timeline/")
+    assert fake.calls[0]["headers"]["X-IG-App-ID"] == "936619743392459"
+
+
+def test_web_comments_normalizes(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    payload = {
+        "comments": [
+            {
+                "pk": "17900",
+                "user": {"pk": "5", "username": "aeri", "profile_pic_url": "https://cdn/a.jpg"},
+                "text": "love this",
+                "created_at_utc": 1_700_000_000,
+                "comment_like_count": 12,
+                "has_liked_comment": True,
+            }
+        ],
+        "next_min_id": "min123",
+    }
+    fake = FakeRequests(FakeResponse(200, payload))
+    monkeypatch.setattr(engine_module, "requests", fake)
+
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    result = engine.dispatch(
+        "web.comments", {"cookies": {"sessionid": "s"}, "mediaId": "42"}
+    )
+    assert result["items"][0]["id"] == "17900"
+    assert result["items"][0]["user"]["username"] == "aeri"
+    assert result["items"][0]["text"] == "love this"
+    assert result["items"][0]["liked"] is True
+    assert result["nextCursor"] == "min123"
+    assert "/api/v1/media/42/comments/" in fake.calls[0]["url"]
+
+
+def test_web_threads_normalizes_inbox(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    payload = {
+        "inbox": {
+            "threads": [
+                {
+                    "thread_id": "340282",
+                    "thread_title": "aeri",
+                    "users": [{"pk": "5", "username": "aeri"}],
+                    "last_activity_at": 1_700_000_000_000_000,
+                    "items": [
+                        {"item_id": "1", "user_id": "5", "item_type": "text", "text": "hi", "timestamp": 1_700_000_000_000_000},
+                        {"item_id": "2", "user_id": "42", "item_type": "text", "text": "hey", "timestamp": 1_700_000_001_000_000},
+                    ],
+                }
+            ]
+        }
+    }
+    fake = FakeRequests(FakeResponse(200, payload))
+    monkeypatch.setattr(engine_module, "requests", fake)
+
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    result = engine.dispatch("web.threads", {"cookies": {"sessionid": "s", "ds_user_id": "42"}})
+    thread = result["items"][0]
+    assert thread["id"] == "340282"
+    assert thread["title"] == "aeri"
+    assert thread["lastActivityAt"] == 1_700_000_000  # microseconds reduced to seconds
+    # API items are newest-first; the normalizer reverses them for top-to-bottom display.
+    assert thread["messages"][0]["text"] == "hey"
+    assert thread["messages"][0]["mine"] is True  # viewer 42's own message
+    assert thread["messages"][1]["text"] == "hi"
+    assert thread["messages"][1]["mine"] is False
+    assert "/api/v1/direct_v2/inbox/" in fake.calls[0]["url"]
+
+
+def test_web_thread_returns_items_chronologically(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    payload = {
+        "thread": {
+            "thread_id": "340282",
+            "items": [
+                {"item_id": "2", "user_id": "42", "item_type": "text", "text": "second"},
+                {"item_id": "1", "user_id": "5", "item_type": "text", "text": "first"},
+            ],
+        }
+    }
+    monkeypatch.setattr(engine_module, "requests", FakeRequests(FakeResponse(200, payload)))
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    result = engine.dispatch("web.thread", {"cookies": {"sessionid": "s", "ds_user_id": "42"}, "threadId": "340282"})
+    # newest-first API order reversed → oldest ("first") at top
+    assert [m["text"] for m in result["items"]] == ["first", "second"]
+    assert result["items"][1]["mine"] is True
+
+
+class SendFakeRequests:
+    """Serves the token page (HTML) on GET, then a GraphQL ok on POST."""
+
+    RequestException = Exception
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def request(self, method: str, url: str, **kwargs: Any) -> Any:
+        self.calls.append({"method": method, "url": url, **kwargs})
+        if method == "GET":
+            html = '["DTSGInitialData",[],{"token":"DTSG_TOKEN"}] ["LSD",[],{"token":"LSD_TOKEN"}]'
+            return type("R", (), {"status_code": 200, "text": html, "json": lambda self: {}})()
+        return FakeResponse(200, {"data": {"xdt_send_message": {"ok": True}}})
+
+
+def test_web_send_uses_graphql_with_page_tokens(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    fake = SendFakeRequests()
+    monkeypatch.setattr(engine_module, "requests", fake)
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    result = engine.dispatch(
+        "web.send", {"cookies": {"sessionid": "s", "ds_user_id": "42"}, "threadId": "34", "text": "hello"}
+    )
+    assert result["message"]["text"] == "hello"
+    assert result["message"]["mine"] is True
+    # First a GET to scrape tokens, then the GraphQL POST.
+    assert fake.calls[0]["method"] == "GET"
+    post = fake.calls[1]
+    assert post["method"] == "POST" and post["url"].endswith("/api/graphql")
+    body = post["data"]
+    assert body["fb_dtsg"] == "DTSG_TOKEN"
+    assert body["lsd"] == "LSD_TOKEN"
+    assert body["fb_api_req_friendly_name"] == "IGDirectTextSendMutation"
+    assert '"ig_thread_igid":"34"' in body["variables"]
+    assert '"sensitive_string_value":"hello"' in body["variables"]
+
+
+def test_web_profile_and_medias_normalize(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    payload = {
+        "data": {
+            "user": {
+                "id": "42",
+                "username": "maya",
+                "full_name": "Maya",
+                "biography": "hi",
+                "profile_pic_url_hd": "https://cdn/p.jpg",
+                "edge_followed_by": {"count": 1200},
+                "edge_follow": {"count": 300},
+                "edge_owner_to_timeline_media": {
+                    "count": 2,
+                    "edges": [
+                        {"node": {"id": "9", "shortcode": "abc", "is_video": False,
+                                   "display_url": "https://cdn/x.jpg",
+                                   "edge_liked_by": {"count": 10},
+                                   "edge_media_to_comment": {"count": 3}}},
+                    ],
+                },
+            }
+        }
+    }
+    monkeypatch.setattr(engine_module, "requests", FakeRequests(FakeResponse(200, payload)))
+    engine = ProtocolEngine(client_factory=ClientFactory())
+
+    profile = engine.dispatch("web.profile", {"cookies": {"sessionid": "s"}, "username": "maya"})
+    assert profile["user"]["followerCount"] == 1200
+    assert profile["user"]["mediaCount"] == 2
+    assert profile["user"]["biography"] == "hi"
+
+    medias = engine.dispatch("web.medias", {"cookies": {"sessionid": "s"}, "username": "maya"})
+    assert medias["items"][0]["id"] == "9"
+    assert medias["items"][0]["likeCount"] == 10
+    assert medias["items"][0]["imageUrl"] == "https://cdn/x.jpg"
+
+
+def test_web_timeline_requires_a_session() -> None:
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    with pytest.raises(ProtocolError) as error:
+        engine.dispatch("web.timeline", {"cookies": {"csrftoken": "t"}})
+    assert error.value.code == "not_authenticated"
+
+
+def test_web_session_expiry_is_a_safe_error(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    monkeypatch.setattr(engine_module, "requests", FakeRequests(FakeResponse(403, {})))
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    with pytest.raises(ProtocolError) as error:
+        engine.dispatch("web.timeline", {"cookies": {"sessionid": "s"}})
+    assert error.value.code == "session_expired"
+
+
 def test_normalizer_ignores_non_media_entries() -> None:
     assert normalize_timeline({"feed_items": [{"stories": []}]}) == {
         "items": [],

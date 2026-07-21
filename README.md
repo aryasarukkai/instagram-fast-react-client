@@ -33,33 +33,35 @@ and notarization follow after the account and data boundaries are stable.
 
 ## Current status
 
-The desktop foundation and a large mobile-backed feature surface are implemented.
-The web-session backend is an active work in progress: the app can open Instagram's
-real login in a dedicated native webview and capture the resulting session into
-Stronghold, but web data commands and unified dual-session routing are not connected
-yet.
+The desktop foundation and **both backends are live**. The **web session backend now
+powers the core experience**: the app captures a browser-minted Instagram session
+(embedded webview login *or* manual cookie import) into the encrypted vault and
+serves the feed, stories, comments, direct messages, and profiles through direct
+Polaris web requests that closely replicate the real instagram.com web client. The
+mobile `instagrapi` backend remains available for mobile-only capabilities and as a
+fallback when no web session is present.
 
 | Surface | Current state |
 | --- | --- |
 | Tauri shell and bundled Python sidecar | Implemented and locally packaged |
-| Keychain-backed Stronghold vault | Implemented and tested |
-| Embedded Instagram web login/session capture | Scaffold implemented; hardening and routing remain |
-| Mobile password login and stable device identity | Implemented; live validation still cautious |
-| 2FA codes and official-app approval | Implemented with contract coverage |
-| Home timeline and pagination | Implemented through the mobile engine |
-| Story tray | Read-only mobile implementation; playback not connected |
-| Reels and Discover Reels | Read-only mobile implementation |
-| Explore grid | Read-only mobile implementation |
-| Profile and profile posts | Read-only mobile implementation |
-| Activity and post comments | Read-only mobile implementation |
-| Direct inbox, threads, Notes, and text sending | Implemented through the mobile engine; live validation pending |
-| Presence | Protocol command implemented; UI integration pending |
-| Search, posting, rich interactions, and creation | Planned or disabled |
+| Keychain-backed Stronghold vault | Implemented and tested (survives restart) |
+| Web session: embedded login **and** manual cookie import (string or JSON) | Implemented; session validated on launch, expiry auto-clears |
+| Native image proxy (`igimg://`) for CDN images incl. profile pics | Implemented |
+| Home feed | **Web-backed**, cached across navigations with manual reload; mobile fallback |
+| Story tray | **Web-backed** (read); playback not connected |
+| Post comments | **Web-backed** |
+| Direct inbox, thread history, polling for new DMs | **Web-backed** |
+| Direct **send**, **replies**, shared post/reel rendering, reaction display, grouping | **Web-backed** (GraphQL send with page-scraped `fb_dtsg`/`lsd`) |
+| Profile and profile posts | **Web-backed** (first grid page; pagination pending) |
+| Account identity (username/avatar) | **Web-backed** |
+| Mobile password login, 2FA, device identity, official-app approval | Implemented through the mobile engine |
+| Explore grid, Reels, Activity/Notifications | Mobile engine only; web wiring pending |
+| Likes, saves, shares, posting, creation | Not implemented (planned) |
 
 There is no demo account or staged-data mode. Outside Tauri, the Vite build shows a
 locked login screen and every Instagram data request rejects with `native_required`.
 
-## Architecture
+## How it fundamentally works
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
@@ -69,23 +71,40 @@ locked login screen and every Instagram data request rejects with `native_requir
                            │ allowlisted Tauri commands
 ┌──────────────────────────▼───────────────────────────────────┐
 │ Rust / Tauri 2 host                                          │
-│ Window ownership, backend routing, redaction, Keychain vault │
-└───────────────┬───────────────────────────────┬──────────────┘
-                │                               │
-                │ web session                   │ private JSON-RPC
-┌───────────────▼──────────────┐  ┌─────────────▼──────────────┐
-│ Instagram web/Polaris client │  │ Python 3.12 mobile sidecar │
-│ GraphQL, REST, realtime       │  │ instagrapi + normalization │
-│ Planned data transport        │  │ Implemented data transport │
-└───────────────┬──────────────┘  └─────────────┬──────────────┘
-                └───────────────┬────────────────┘
-                                ▼
-                            Instagram
+│ • Command routing: web session present → web backend,        │
+│   otherwise → mobile backend                                 │
+│ • Keychain-backed Stronghold vault (cookies, creds, sessions)│
+│ • Embedded Instagram login webview + cookie capture          │
+│ • igimg:// image proxy (reqwest, server-side Referer+cookies)│
+└──────────────┬────────────────────────────────┬──────────────┘
+               │ private JSON-RPC (stdin/stdout) │ igimg://
+┌──────────────▼─────────────────────────────┐  └─► Instagram image CDN
+│ Python 3.12 sidecar — two transports        │
+│ • Web backend: requests → www.instagram.com │
+│   Polaris REST + GraphQL, full browser       │
+│   headers, page-scraped fb_dtsg/lsd for      │
+│   writes (DM send/reply)                      │
+│ • Mobile backend: instagrapi → i.instagram   │
+│ Both normalize to the same renderer contracts│
+└──────────────┬──────────────────────────────┘
+               ▼
+           Instagram
 ```
 
-Today, all connected data commands still route through the mobile sidecar. The
-embedded web login stores a browser session for the next stage of the architecture;
-it does not yet power feed, messaging, or other app routes.
+**The core flow.** The user captures a real browser session — either by logging in
+through the embedded Instagram webview, or by pasting cookies exported from a
+logged-in browser (plain string or Cookie-Editor JSON). Those cookies are encrypted
+in Stronghold, and the app enters on that web session. Every core Tauri command
+(`feed_timeline`, `direct_threads`, `media_comments`, `user_profile`, …) checks for a
+stored web session first and, if present, calls the sidecar's **web backend**, which
+issues direct HTTPS requests to `www.instagram.com` with the web app id and a full
+Chromium header set. Reads (feed, stories, comments, DMs, profile) are plain
+authenticated GETs/POSTs; writes (sending or replying to a DM) replicate the exact
+`IGDirectTextSendMutation` GraphQL call, scraping the per-session `fb_dtsg`/`lsd`
+tokens from the page. Instagram's image CDN rejects direct webview requests for many
+assets (especially profile pictures), so images route through a native `igimg://`
+proxy that refetches them server-side with the right `Referer` and cookies. When no
+web session exists, the same commands fall back to the mobile `instagrapi` sidecar.
 
 See [speedgram/docs/web-api-surface.md](speedgram/docs/web-api-surface.md) for the
 captured Polaris operation map that guides the web backend.
@@ -222,45 +241,48 @@ the official Instagram app and allow the account to recover before another test.
 
 ## Roadmap
 
-### Phase 1 — Dual-session foundation
+### Shipped
 
-- Harden the embedded Instagram login window with strict origin/navigation rules.
-- Separate web-session and mobile-session state from the top-level account state.
-- Bind every stored session to one normalized account identity.
-- Clear both encrypted records and native webview cookies on disconnect/logout.
-- Add authentication cooldowns and redacted post-approval diagnostics.
+- Dual-backend routing (web session preferred, mobile fallback) behind the same
+  normalized command contracts.
+- Web session capture two ways: embedded Instagram login webview, and manual cookie
+  import (string or Cookie-Editor JSON).
+- Encrypted vault that survives restart; web session validated on launch with
+  automatic clear-and-relogin on expiry.
+- Web core reads: feed, stories tray, comments, direct inbox + full thread history,
+  profiles + post grid, account identity.
+- Web direct **writes**: sending and replying to messages via the real GraphQL
+  mutation with page-scraped session tokens.
+- Direct polish: shared post/reel rendering, reaction display, message grouping,
+  new-DM polling, send/scroll animations.
+- Native `igimg://` image proxy for CDN assets that reject direct webview requests.
+- Home feed caching with a manual "reload" affordance; bootstrap preloads feed,
+  stories, and DMs so the app opens populated.
 
-### Phase 2 — Web core backend
+### Next
 
-- Add a Rust-owned Polaris GraphQL/REST client using the captured web session.
-- Route feed, stories, Explore, profiles, comments, activity, search, and standard
-  Direct features through the web backend.
-- Normalize web payloads into the same public contracts already used by React.
-- Add expiry detection and an explicit web-session renewal flow.
+- **Post interactions**: likes, saves, and shares through their Polaris mutations
+  (writes — captured per-action from real traffic to match the client exactly).
+- **Remaining web reads**: Explore grid, Reels, Activity/Notifications.
+- **Pagination**: home feed "load more", profile grid, and Reels beyond the first page.
+- **Realtime Direct**: replace inbox polling with the `edge-chat` websocket surface;
+  presence, typing, read receipts.
+- **Story playback** and rich story creation.
 
-### Phase 3 — Mobile capability backend
+### Mobile capability backend (extras)
 
-- Keep `instagrapi` for mobile-only reads, creation surfaces, and unsupported web
-  interactions.
-- Formalize per-command backend selection and safe fallback rules.
-- Complete story playback, Reels pagination, profile pagination, Notes, and presence.
-- Add a passwordless browser-session import experiment without silently retrying
-  password login.
+- Use `instagrapi` for the genuinely mobile-only surface the web API doesn't expose
+  (chat polls, view-once/vanish messages, rich story creation).
+- Harden the mobile transport toward an Android-coherent TLS fingerprint
+  (curl_cffi seam already scaffolded in `protocol/.../transport.py`).
 
-### Phase 4 — Messaging and interactions
+### Hardening and distribution
 
-- Add realtime Direct updates and presence through the web socket surface.
-- Support read receipts, media shares, replies, and safe rich-message rendering.
-- Add likes, saves, comments, story seen state, and other explicit user actions.
-- Require write-specific rate limiting, optimistic rollback, and clear failure UI.
-
-### Phase 5 — Product hardening and distribution
-
-- Complete uninterrupted secondary-account acceptance tests.
-- Add broader contract, crash-recovery, expiry, and migration coverage.
-- Audit accessibility, performance, and renderer memory use.
-- Add macOS Developer ID signing and notarization.
-- Evaluate Intel macOS, Windows, and Linux packaging.
+- Strict origin/navigation rules on the embedded login window; minimize the cookie
+  allowlist; clear webview cookie store on disconnect.
+- Write-specific rate limiting, optimistic rollback, and clear failure UI.
+- Broader contract, crash-recovery, expiry, and migration coverage.
+- macOS Developer ID signing and notarization; evaluate Intel macOS, Windows, Linux.
 
 ## Repository map
 

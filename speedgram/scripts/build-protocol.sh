@@ -20,6 +20,8 @@ uv run --python 3.12 pyinstaller \
   --noconfirm \
   --onefile \
   --name speedgram-protocol \
+  --hidden-import brotli \
+  --hidden-import zstandard \
   --distpath "$PROTOCOL_DIR/dist" \
   --workpath "$PROTOCOL_DIR/build" \
   --specpath "$PROTOCOL_DIR/build" \

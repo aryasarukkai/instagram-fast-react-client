@@ -23,6 +23,7 @@ const RoutedApp = () => {
   if (authState.status !== 'authenticated') return <LoginPage />;
 
   return (
+    <div className="app-enter">
     <Routes>
       <Route path="/home" element={<HomePage />} />
       <Route path="/explore" element={<ExplorePage />} />
@@ -32,6 +33,7 @@ const RoutedApp = () => {
       <Route path="/profile" element={<ProfilePage />} />
       <Route path="*" element={<Navigate to="/home" replace />} />
     </Routes>
+    </div>
   );
 };
 

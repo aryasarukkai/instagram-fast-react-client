@@ -20,12 +20,16 @@ const IG_ORIGIN: &str = "https://www.instagram.com";
 const WEB_SESSION_COOKIE: &str = "sessionid";
 /// Event the capture task emits so the frontend can react to login progress.
 const WEB_LOGIN_EVENT: &str = "web-login-status";
+/// Custom scheme the webview uses to load Instagram images through our proxy.
+const IMAGE_SCHEME: &str = "igimg";
+const WEB_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 struct AppState {
     sidecar: SidecarManager,
     vault: Option<SecretVault>,
     vault_error: Option<String>,
     telemetry_consent: AtomicBool,
+    http_client: reqwest::Client,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,6 +121,7 @@ struct ThreadInput {
 struct SendInput {
     thread_id: String,
     text: String,
+    reply_to_message_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -147,6 +152,51 @@ fn require_vault(state: &AppState) -> Result<&SecretVault, CommandError> {
                 .unwrap_or("Secure storage is unavailable."),
         )
     })
+}
+
+/// The cookie jar of the stored web session, if one exists — the core backend's
+/// credential. Presence of this means the app should serve the web (core) feed.
+fn web_session_cookies(state: &AppState) -> Result<Option<Value>, CommandError> {
+    let session = require_vault(state)?
+        .load_web_session()
+        .map_err(|message| CommandError::new("secure_storage_unavailable", message))?;
+    Ok(session.and_then(|session| session.get("cookies").cloned()))
+}
+
+/// Authenticated web state without a confirmed account fetch — used when the
+/// account call fails for a transient reason but the session is likely still valid.
+fn web_fallback_state(session: &Value) -> Value {
+    json!({
+        "status": "authenticated",
+        "mode": "web",
+        "user": { "id": session.get("userId").cloned().unwrap_or(Value::Null), "username": "" },
+    })
+}
+
+/// The authenticated app state for a web (core) session. Best-effort fetches the
+/// account (username/avatar) so the app has a real identity; falls back to just the
+/// user id if that call fails, since the session itself is still valid.
+async fn web_authenticated_state(state: &AppState, session: &Value) -> Value {
+    let cookies = session.get("cookies").cloned().unwrap_or(Value::Null);
+    let user = state
+        .sidecar
+        .call("web.account", json!({ "cookies": cookies }), false)
+        .await
+        .ok()
+        .filter(|account| {
+            account
+                .get("username")
+                .and_then(Value::as_str)
+                .map(|name| !name.is_empty())
+                .unwrap_or(false)
+        })
+        .unwrap_or_else(|| {
+            json!({
+                "id": session.get("userId").cloned().unwrap_or(Value::Null),
+                "username": "",
+            })
+        });
+    json!({ "status": "authenticated", "mode": "web", "user": user })
 }
 
 async fn persist_session(state: &AppState, auth_state: &Value) -> Result<(), CommandError> {
@@ -211,6 +261,40 @@ async fn auth_get_state(state: State<'_, AppState>) -> Result<Value, CommandErro
         .map_err(CommandError::from)?;
     if current.get("status").and_then(Value::as_str) != Some("signed_out") {
         return Ok(current);
+    }
+
+    // Core (web) session takes precedence: enter the app on the browser-minted session.
+    // Validate it first so a session Instagram has killed drops cleanly to login
+    // instead of leaving the app spinning forever.
+    if let Some(session) = require_vault(&state)?
+        .load_web_session()
+        .map_err(|message| CommandError::new("secure_storage_unavailable", message))?
+    {
+        let cookies = session.get("cookies").cloned().unwrap_or(Value::Null);
+        match state
+            .sidecar
+            .call("web.account", json!({ "cookies": cookies }), false)
+            .await
+        {
+            Ok(user)
+                if user
+                    .get("username")
+                    .and_then(Value::as_str)
+                    .map(|name| !name.is_empty())
+                    .unwrap_or(false) =>
+            {
+                return Ok(json!({ "status": "authenticated", "mode": "web", "user": user }));
+            }
+            Err(error) if error.code == "session_expired" => {
+                let _ = require_vault(&state)?.clear_web_session();
+                return Ok(json!({
+                    "status": "signed_out",
+                    "storageWarning": "Your Instagram web session expired. Sign in again.",
+                }));
+            }
+            // Transient failure (network) — keep the session and enter with a fallback identity.
+            _ => return Ok(web_fallback_state(&session)),
+        }
     }
 
     let vault = require_vault(&state)?;
@@ -367,11 +451,25 @@ async fn feed_timeline(
     input: TimelineInput,
     state: State<'_, AppState>,
 ) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call("web.timeline", json!({ "cookies": cookies, "cursor": input.cursor }), false)
+            .await
+            .map_err(CommandError::from);
+    }
     call_with_restore(&state, "feed.timeline", json!({ "cursor": input.cursor })).await
 }
 
 #[tauri::command]
 async fn feed_stories(state: State<'_, AppState>) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call("web.stories", json!({ "cookies": cookies }), false)
+            .await
+            .map_err(CommandError::from);
+    }
     call_with_restore(&state, "feed.stories", json!({})).await
 }
 
@@ -395,6 +493,17 @@ async fn media_comments(
     input: MediaInput,
     state: State<'_, AppState>,
 ) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.comments",
+                json!({ "cookies": cookies, "mediaId": input.media_id }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
     call_with_restore(&state, "media.comments", json!({ "mediaId": input.media_id })).await
 }
 
@@ -403,6 +512,13 @@ async fn user_profile(
     input: ProfileInput,
     state: State<'_, AppState>,
 ) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call("web.profile", json!({ "cookies": cookies, "username": input.username }), false)
+            .await
+            .map_err(CommandError::from);
+    }
     call_with_restore(&state, "user.profile", json!({ "username": input.username })).await
 }
 
@@ -411,6 +527,17 @@ async fn user_medias(
     input: MediasInput,
     state: State<'_, AppState>,
 ) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.medias",
+                json!({ "cookies": cookies, "username": input.username }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
     call_with_restore(
         &state,
         "user.medias",
@@ -426,6 +553,13 @@ async fn activity_inbox(state: State<'_, AppState>) -> Result<Value, CommandErro
 
 #[tauri::command]
 async fn direct_threads(state: State<'_, AppState>) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call("web.threads", json!({ "cookies": cookies }), false)
+            .await
+            .map_err(CommandError::from);
+    }
     call_with_restore(&state, "direct.threads", json!({})).await
 }
 
@@ -434,11 +568,38 @@ async fn direct_thread(
     input: ThreadInput,
     state: State<'_, AppState>,
 ) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.thread",
+                json!({ "cookies": cookies, "threadId": input.thread_id }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
     call_with_restore(&state, "direct.thread", json!({ "threadId": input.thread_id })).await
 }
 
 #[tauri::command]
 async fn direct_send(input: SendInput, state: State<'_, AppState>) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.send",
+                json!({
+                    "cookies": cookies,
+                    "threadId": input.thread_id,
+                    "text": input.text,
+                    "replyToMessageId": input.reply_to_message_id,
+                }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
     call_with_restore(
         &state,
         "direct.send",
@@ -449,11 +610,18 @@ async fn direct_send(input: SendInput, state: State<'_, AppState>) -> Result<Val
 
 #[tauri::command]
 async fn direct_notes(state: State<'_, AppState>) -> Result<Value, CommandError> {
+    // Notes/presence are web GraphQL-only; return empty in web mode rather than erroring.
+    if web_session_cookies(&state)?.is_some() {
+        return Ok(json!({ "items": [] }));
+    }
     call_with_restore(&state, "direct.notes", json!({})).await
 }
 
 #[tauri::command]
 async fn direct_presence(state: State<'_, AppState>) -> Result<Value, CommandError> {
+    if web_session_cookies(&state)?.is_some() {
+        return Ok(json!({ "users": {} }));
+    }
     call_with_restore(&state, "direct.presence", json!({})).await
 }
 
@@ -498,11 +666,11 @@ async fn save_web_session_manual(
             "Paste the Instagram cookies, including a non-empty sessionid.",
         )
     })?;
-    let user_id = session.get("userId").cloned().unwrap_or(Value::Null);
     require_vault(&state)?
         .save_web_session(&session)
         .map_err(|message| CommandError::new("session_persistence_failed", message))?;
-    Ok(json!({ "stored": true, "userId": user_id }))
+    // Return the full authenticated state so the UI enters the app with a real account.
+    Ok(web_authenticated_state(&state, &session).await)
 }
 
 /// Report what the vault already holds so the UI can skip steps the user has done.
@@ -727,10 +895,93 @@ fn web_session_from_jar(jar: serde_json::Map<String, Value>) -> Option<Value> {
     Some(json!({ "userId": user_id, "cookies": Value::Object(jar) }))
 }
 
+/// Decode the target image URL from an `igimg://img/<base64url>` request path, and
+/// only allow Instagram/Meta image hosts (SSRF guard).
+fn decode_image_target(path: &str) -> Option<String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    let encoded = path.trim_start_matches('/');
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).ok()?;
+    let url = String::from_utf8(bytes).ok()?;
+    let allowed = url.starts_with("https://")
+        && (url.contains(".cdninstagram.com")
+            || url.contains(".fbcdn.net")
+            || url.contains(".instagram.com"));
+    allowed.then_some(url)
+}
+
+fn image_cookie_header(state: &AppState) -> String {
+    state
+        .vault
+        .as_ref()
+        .and_then(|vault| vault.load_web_session().ok().flatten())
+        .and_then(|session| session.get("cookies").cloned())
+        .and_then(|cookies| cookies.as_object().cloned())
+        .map(|jar| {
+            jar.iter()
+                .filter_map(|(name, value)| value.as_str().map(|v| format!("{name}={v}")))
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap_or_default()
+}
+
+/// Proxy an Instagram image server-side with the browser Referer + session cookies
+/// so hotlink/geo-restricted CDN URLs (profile pics) load in the webview.
+async fn fetch_ig_image(app: AppHandle, path: String) -> tauri::http::Response<Vec<u8>> {
+    let empty = |status: u16| {
+        tauri::http::Response::builder()
+            .status(status)
+            .body(Vec::new())
+            .unwrap()
+    };
+    let Some(target) = decode_image_target(&path) else {
+        return empty(400);
+    };
+    let (client, cookie_header) = {
+        let state = app.state::<AppState>();
+        (state.http_client.clone(), image_cookie_header(&state))
+    };
+    let mut request = client
+        .get(&target)
+        .header("Referer", "https://www.instagram.com/")
+        .header("User-Agent", WEB_USER_AGENT);
+    if !cookie_header.is_empty() {
+        request = request.header("Cookie", cookie_header);
+    }
+    match request.send().await {
+        Ok(response) if response.status().is_success() => {
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("image/jpeg")
+                .to_owned();
+            match response.bytes().await {
+                Ok(bytes) => tauri::http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", content_type)
+                    .header("Cache-Control", "max-age=86400")
+                    .body(bytes.to_vec())
+                    .unwrap(),
+                Err(_) => empty(502),
+            }
+        }
+        Ok(response) => empty(response.status().as_u16()),
+        Err(_) => empty(502),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .register_asynchronous_uri_scheme_protocol(IMAGE_SCHEME, |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let path = request.uri().path().to_owned();
+            tauri::async_runtime::spawn(async move {
+                responder.respond(fetch_ig_image(app, path).await);
+            });
+        })
         .setup(|app| {
             let vault_result = SecretVault::open(app.handle());
             let (vault, vault_error) = match vault_result {
@@ -742,6 +993,7 @@ pub fn run() {
                 vault,
                 vault_error,
                 telemetry_consent: AtomicBool::new(false),
+                http_client: reqwest::Client::new(),
             });
             Ok(())
         })

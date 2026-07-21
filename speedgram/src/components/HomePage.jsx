@@ -8,13 +8,14 @@ import {
   MoreHorizontal,
   Music2,
   Plus,
+  RefreshCw,
   Send,
 } from 'lucide-react';
 import PropTypes from 'prop-types';
 import AppShell from './AppShell';
 import CommentsSheet from './CommentsSheet';
 import Visual, { Avatar } from './Visual';
-import { nativeClient } from '../nativeClient';
+import { feedCache, nativeClient } from '../nativeClient';
 import { useAuth } from '../auth/AuthContext';
 import { useResource } from '../useResource';
 import { compactCount as compact, exactCount as exact, relativeTime } from '../format';
@@ -110,13 +111,15 @@ PostCard.propTypes = { onOpenComments: PropTypes.func.isRequired, post: PropType
 
 const HomePage = () => {
   const { authState } = useAuth();
-  const [posts, setPosts] = useState([]);
-  const [cursor, setCursor] = useState(null);
-  const [hasMore, setHasMore] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const cached = feedCache.get();
+  const [posts, setPosts] = useState(cached?.posts || []);
+  const [cursor, setCursor] = useState(cached?.cursor ?? null);
+  const [hasMore, setHasMore] = useState(cached?.hasMore ?? false);
+  const [loading, setLoading] = useState(!cached);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
   const [activePost, setActivePost] = useState(null);
+  const [showReload, setShowReload] = useState(false);
 
   const loadStories = useCallback(() => nativeClient.stories(), []);
   const stories = useResource(loadStories);
@@ -126,11 +129,16 @@ const HomePage = () => {
     setError(null);
     try {
       const page = await nativeClient.timeline(reset ? null : cursor);
-      setPosts((current) => reset
-        ? page.items
-        : [...current, ...page.items.filter((item) => !current.some((post) => post.id === item.id))]);
+      setPosts((current) => {
+        const next = reset
+          ? page.items
+          : [...current, ...page.items.filter((item) => !current.some((post) => post.id === item.id))];
+        feedCache.set({ posts: next, cursor: page.nextCursor, hasMore: page.hasMore });
+        return next;
+      });
       setCursor(page.nextCursor);
       setHasMore(page.hasMore);
+      if (reset) setShowReload(false);
     } catch (requestError) {
       setError(requestError?.message || 'The home timeline could not be loaded.');
       if (requestError?.code === 'rate_limited') setHasMore(false);
@@ -140,16 +148,36 @@ const HomePage = () => {
     }
   }, [cursor]);
 
+  // Reuse the cached feed across Home navigations; only fetch when there's none.
   useEffect(() => {
-    load({ reset: true });
-    // The first request follows the signed-in account, not cursor changes.
+    if (!feedCache.get()) load({ reset: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authState.user?.username]);
+
+  // Surface a "reload" affordance once the feed is a couple minutes old.
+  useEffect(() => {
+    const entry = feedCache.get();
+    if (!entry) return undefined;
+    const remaining = Math.max(0, 120000 - (Date.now() - entry.fetchedAt));
+    const timer = setTimeout(() => setShowReload(true), remaining);
+    return () => clearTimeout(timer);
+  }, [posts]);
+
+  const reload = () => {
+    document.querySelector('.feed-column')?.scrollTo?.({ top: 0, behavior: 'smooth' });
+    load({ reset: true });
+  };
 
   return (
     <AppShell>
       <div className="feed-layout">
         <div className="feed-column">
+          {showReload && !loading ? (
+            <button className="feed-reload" type="button" onClick={reload}>
+              <RefreshCw size={15} /> Reload feed
+            </button>
+          ) : null}
+
           {stories.data?.items?.length ? (
             <section className="stories" aria-label="Stories">
               {stories.data.items.map((story) => <StoryBubble story={story} key={story.id} />)}
@@ -180,7 +208,7 @@ const HomePage = () => {
 
         <aside className="feed-side">
           <div className="side-account">
-            <Avatar username={authState.user?.username} size={56} />
+            <Avatar src={authState.user?.profilePictureUrl} username={authState.user?.username} size={56} />
             <div>
               <strong>{authState.user?.username}</strong>
               <small>{authState.user?.fullName || ''}</small>

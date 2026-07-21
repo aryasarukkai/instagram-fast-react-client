@@ -22,6 +22,27 @@ const invokeNative = async (command, input) => {
 
 const native = (command, input) => (isNativeRuntime() ? invokeNative(command, input) : browserOnly());
 
+// Prefetch cache: warmup() kicks off the initial feed/stories/DM requests during
+// app bootstrap so the first view has data ready instead of showing a second loader.
+const _warm = new Map();
+const warmed = (key, run) => {
+  if (_warm.has(key)) {
+    const cached = _warm.get(key);
+    _warm.delete(key);
+    return cached;
+  }
+  return run();
+};
+
+// Persist the loaded home feed across Home navigations so it isn't refetched on
+// every visit — HomePage reuses it and offers a manual reload once it's stale.
+let _feedCache = null;
+export const feedCache = {
+  get: () => _feedCache,
+  set: (data) => { _feedCache = { ...data, fetchedAt: Date.now() }; },
+  clear: () => { _feedCache = null; },
+};
+
 export const nativeClient = {
   async runtimeStatus() {
     if (!isNativeRuntime()) {
@@ -55,12 +76,39 @@ export const nativeClient = {
     return native('auth_logout');
   },
 
+  // Fire the initial feed/stories/DM requests so they're in-flight (or done) by the
+  // time the app renders — avoids the bootstrap loader → feed loader double flash.
+  warmup() {
+    if (!isNativeRuntime()) return;
+    for (const [key, command, input] of [
+      ['timeline', 'feed_timeline', { cursor: null }],
+      ['stories', 'feed_stories', undefined],
+      ['threads', 'direct_threads', undefined],
+    ]) {
+      const promise = invokeNative(command, input);
+      promise.catch(() => {}); // swallow only if never consumed
+      _warm.set(key, promise);
+    }
+  },
+
+  // Resolve once the prefetched feed/stories/DMs are ready (or a safety timeout),
+  // so the bootstrap screen can hold until the first view has data — no second loader.
+  async warmupSettled(timeoutMs = 8000) {
+    const pending = ['timeline', 'stories', 'threads'].map((key) => _warm.get(key)).filter(Boolean);
+    if (!pending.length) return;
+    await Promise.race([
+      Promise.allSettled(pending),
+      new Promise((resolve) => { setTimeout(resolve, timeoutMs); }),
+    ]);
+  },
+
   timeline(cursor = null) {
+    if (cursor == null) return warmed('timeline', () => native('feed_timeline', { cursor: null }));
     return native('feed_timeline', { cursor });
   },
 
   stories() {
-    return native('feed_stories');
+    return warmed('stories', () => native('feed_stories'));
   },
 
   reels({ cursor = null, source = 'following' } = {}) {
@@ -88,15 +136,15 @@ export const nativeClient = {
   },
 
   threads() {
-    return native('direct_threads');
+    return warmed('threads', () => native('direct_threads'));
   },
 
   thread(threadId) {
     return native('direct_thread', { threadId });
   },
 
-  sendMessage(threadId, text) {
-    return native('direct_send', { threadId, text });
+  sendMessage(threadId, text, replyToMessageId = null) {
+    return native('direct_send', { threadId, text, replyToMessageId });
   },
 
   notes() {

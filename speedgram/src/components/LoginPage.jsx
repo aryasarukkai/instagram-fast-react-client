@@ -228,9 +228,6 @@ const LoginPage = () => {
                 </div>
               ) : null}
 
-              {authState.status === 'web_captured' ? (
-                <div className="auth-error" role="status"><CheckCircle2 size={16} /><span>Signed in to Instagram on the web. You can enable mobile-only features next.</span></div>
-              ) : null}
               {authState.status === 'web_idle' && authState.message ? (
                 <div className="auth-error" role="alert"><TriangleAlert size={16} /><span>{authState.message}</span></div>
               ) : null}

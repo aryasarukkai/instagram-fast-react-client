@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { LoaderCircle, Palette, Phone, Send, SquarePen, Video } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CornerUpLeft, LoaderCircle, Palette, Phone, Send, SquarePen, Video, X } from 'lucide-react';
 import PropTypes from 'prop-types';
 import AppShell from './AppShell';
 import Visual, { Avatar } from './Visual';
@@ -54,44 +54,79 @@ const ThemePicker = ({ value, onChange, onClose }) => (
 
 ThemePicker.propTypes = { onChange: PropTypes.func.isRequired, onClose: PropTypes.func.isRequired, value: PropTypes.string.isRequired };
 
-const Bubble = ({ message, participants }) => {
+const ReplyButton = ({ message, onReply }) => (
+  <button className="bubble-reply-btn" type="button" onClick={() => onReply(message)} aria-label="Reply">
+    <CornerUpLeft size={15} />
+  </button>
+);
+ReplyButton.propTypes = { message: PropTypes.object.isRequired, onReply: PropTypes.func.isRequired };
+
+const Reactions = ({ reactions }) => (
+  reactions?.length ? <span className="bubble-reactions">{reactions.join(' ')}</span> : null
+);
+Reactions.propTypes = { reactions: PropTypes.array };
+
+const Bubble = ({ message, participants, isNew, onReply, showAvatar, showName }) => {
   const author = participants[message.userId];
+  const pop = isNew ? ' bubble--pop' : '';
+  const canReply = Boolean(message.text || message.share);
+  const leading = message.mine ? null : (showAvatar
+    ? <Avatar src={author?.profilePictureUrl} username={author?.username} size={26} />
+    : <span className="avatar-spacer" aria-hidden="true" />);
+
   if (message.share) {
     return (
-      <div className={`bubble-row${message.mine ? ' is-mine' : ''}`}>
-        {!message.mine ? <Avatar src={author?.profilePictureUrl} username={author?.username} size={26} /> : null}
+      <div className={`bubble-row${message.mine ? ' is-mine' : ''}${pop}`}>
+        {leading}
         <div className="bubble-media">
           <Visual
             className="bubble-visual"
             rounded
             imageUrl={message.share.imageUrl}
-            alt={`Shared post by ${message.share.user.username}`}
+            videoUrl={message.share.videoUrl}
+            alt={`Shared post by ${message.share.user?.username || 'someone'}`}
             seed={message.share.id}
           />
-          <span className="bubble-share-author">{message.share.user.username}</span>
+          {message.share.user?.username ? <span className="bubble-share-author">{message.share.user.username}</span> : null}
+          <Reactions reactions={message.reactions} />
         </div>
+        {canReply ? <ReplyButton message={message} onReply={onReply} /> : null}
       </div>
     );
   }
   if (!message.text) {
     return (
-      <div className={`bubble-row${message.mine ? ' is-mine' : ''}`}>
-        <div className={`bubble is-meta${message.mine ? ' is-mine' : ''}`}><p>{message.kind.replace(/_/g, ' ')}</p></div>
+      <div className={`bubble-row${message.mine ? ' is-mine' : ''}${pop}`}>
+        {leading}
+        <div className={`bubble is-meta${message.mine ? ' is-mine' : ''}`}>
+          <p>{message.kind.replace(/_/g, ' ')}</p>
+          <Reactions reactions={message.reactions} />
+        </div>
       </div>
     );
   }
   return (
-    <div className={`bubble-row${message.mine ? ' is-mine' : ''}`}>
-      {!message.mine ? <Avatar src={author?.profilePictureUrl} username={author?.username} size={26} /> : null}
+    <div className={`bubble-row${message.mine ? ' is-mine' : ''}${pop}`}>
+      {leading}
       <div className={`bubble${message.mine ? ' is-mine' : ''}`}>
-        {author && !message.mine ? <small className="bubble-author">{author.username}</small> : null}
+        {showName && author && !message.mine ? <small className="bubble-author">{author.username}</small> : null}
+        {message.reply ? <span className="bubble-reply-quote">{message.reply}</span> : null}
         <p>{message.text}</p>
+        <Reactions reactions={message.reactions} />
       </div>
+      {canReply ? <ReplyButton message={message} onReply={onReply} /> : null}
     </div>
   );
 };
 
-Bubble.propTypes = { message: PropTypes.object.isRequired, participants: PropTypes.object.isRequired };
+Bubble.propTypes = {
+  isNew: PropTypes.bool,
+  message: PropTypes.object.isRequired,
+  onReply: PropTypes.func.isRequired,
+  participants: PropTypes.object.isRequired,
+  showAvatar: PropTypes.bool,
+  showName: PropTypes.bool,
+};
 
 const Direct = () => {
   const { authState } = useAuth();
@@ -102,6 +137,9 @@ const Direct = () => {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState(null);
   const [extra, setExtra] = useState({});
+  const [justSentId, setJustSentId] = useState(null);
+  const [replyingTo, setReplyingTo] = useState(null);
+  const messagesRef = useRef(null);
 
   const threadsLoader = useCallback(() => nativeClient.threads(), []);
   const notesLoader = useCallback(() => nativeClient.notes(), []);
@@ -125,6 +163,35 @@ const Direct = () => {
   const participants = useMemo(() => Object.fromEntries((conversation?.users || []).map((user) => [user.id, user])), [conversation]);
   const thread = [...(messages.data?.items || conversation?.messages || []), ...(extra[activeId] || [])];
 
+  // Jump to the newest message when a conversation opens or its history loads.
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [activeId, messages.data]);
+
+  // Smoothly follow the thread down when a message is sent.
+  const sentCount = extra[activeId]?.length || 0;
+  useEffect(() => {
+    if (!sentCount) return;
+    const el = messagesRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, [sentCount]);
+
+  // Keep the latest message visible when the reply bar opens/closes.
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, [replyingTo]);
+
+  // Poll for new messages so incoming DMs appear without a manual reload.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      threads.reload?.();
+      messages.reload?.();
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [threads, messages]);
+
   const chooseTheme = (id) => {
     const next = { ...themes, [activeId]: id };
     setThemes(next);
@@ -135,6 +202,14 @@ const Direct = () => {
     }
   };
 
+  const handleReply = (message) => {
+    setReplyingTo({
+      id: message.id,
+      username: message.mine ? 'yourself' : (participants[message.userId]?.username || conversation?.title || 'message'),
+      preview: message.text || (message.share ? 'Shared post' : 'Attachment'),
+    });
+  };
+
   const send = async (event) => {
     event.preventDefault();
     const text = draft.trim();
@@ -142,9 +217,11 @@ const Direct = () => {
     setSending(true);
     setSendError(null);
     try {
-      const result = await nativeClient.sendMessage(activeId, text);
+      const result = await nativeClient.sendMessage(activeId, text, replyingTo?.id ?? null);
       setExtra((current) => ({ ...current, [activeId]: [...(current[activeId] || []), result.message] }));
+      setJustSentId(result.message?.id ?? null);
       setDraft('');
+      setReplyingTo(null);
     } catch (error) {
       setSendError(error?.message || 'The message could not be sent.');
     } finally {
@@ -183,7 +260,7 @@ const Direct = () => {
               className={`dm-row${item.id === activeId ? ' is-active' : ''}`}
               key={item.id}
               type="button"
-              onClick={() => { setActiveId(item.id); setPickerOpen(false); setSendError(null); }}
+              onClick={() => { setActiveId(item.id); setPickerOpen(false); setSendError(null); setReplyingTo(null); }}
             >
               <Avatar
                 src={item.users[0]?.profilePictureUrl}
@@ -217,20 +294,46 @@ const Direct = () => {
 
               <div className="dm-backdrop" aria-hidden="true"><span className="glow one" /><span className="glow two" /><span className="spark" /></div>
 
-              <div className="dm-messages">
+              <div className="dm-messages" ref={messagesRef}>
                 {messages.loading ? <p className="dm-state"><LoaderCircle className="spin" size={18} /> Loading messages</p> : null}
                 {messages.error ? <p className="dm-state error">{messages.error}</p> : null}
-                {thread.map((message) => (
-                  <div key={message.id}>
-                    <p className="dm-time">{clockTime(message.timestamp)}</p>
-                    <Bubble message={message} participants={participants} />
-                  </div>
-                ))}
+                {thread.map((message, index) => {
+                  const prev = thread[index - 1];
+                  const next = thread[index + 1];
+                  const gapFromPrev = prev && prev.timestamp && message.timestamp && message.timestamp - prev.timestamp > 900;
+                  const gapToNext = next && next.timestamp && message.timestamp && next.timestamp - message.timestamp > 900;
+                  const contPrev = prev && prev.mine === message.mine && prev.userId === message.userId && !gapFromPrev;
+                  const contNext = next && next.mine === message.mine && next.userId === message.userId && !gapToNext;
+                  const showTime = message.timestamp && (!prev || gapFromPrev);
+                  return (
+                    <div key={message.id} className={`dm-msg${contPrev ? '' : ' group-start'}`}>
+                      {showTime ? <p className="dm-time">{clockTime(message.timestamp)}</p> : null}
+                      <Bubble
+                        message={message}
+                        participants={participants}
+                        isNew={message.id === justSentId}
+                        onReply={handleReply}
+                        showAvatar={!contNext}
+                        showName={conversation?.isGroup && !contPrev}
+                      />
+                    </div>
+                  );
+                })}
               </div>
 
               {pickerOpen ? <ThemePicker value={theme} onChange={chooseTheme} onClose={() => setPickerOpen(false)} /> : null}
 
               {sendError ? <p className="dm-state error">{sendError}</p> : null}
+
+              {replyingTo ? (
+                <div className="dm-reply-bar">
+                  <div className="dm-reply-copy">
+                    <small>Replying to {replyingTo.username}</small>
+                    <span>{replyingTo.preview}</span>
+                  </div>
+                  <button type="button" onClick={() => setReplyingTo(null)} aria-label="Cancel reply"><X size={16} /></button>
+                </div>
+              ) : null}
 
               <form className="dm-compose" onSubmit={send}>
                 <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Message..." aria-label="Message" />

@@ -54,7 +54,11 @@ impl SecretVault {
     fn from_parts(path: PathBuf, key: Vec<u8>) -> Result<Self, String> {
         let stronghold = Stronghold::new(path, key)
             .map_err(|_| "The encrypted SpeedGram vault could not be opened.".to_owned())?;
-        if stronghold.get_client(CLIENT_NAME).is_err() {
+        // `Stronghold::new` loads the snapshot file, but the client must be pulled
+        // out of it with `load_client` before its records are reachable. Only when
+        // that fails (a brand-new vault) do we create a fresh client — otherwise we
+        // would overwrite the existing snapshot with an empty client on every launch.
+        if stronghold.load_client(CLIENT_NAME).is_err() {
             stronghold.create_client(CLIENT_NAME).map_err(|_| {
                 "The encrypted SpeedGram vault could not be initialized.".to_owned()
             })?;
@@ -235,5 +239,22 @@ mod tests {
         vault.clear_web_session().unwrap();
         assert!(vault.load_web_session().unwrap().is_none());
         assert_eq!(vault.load_credentials().unwrap(), Some(creds));
+    }
+
+    #[test]
+    fn records_survive_reopening_the_vault() {
+        // Simulates an app restart: a second SecretVault over the same snapshot +
+        // key must still see records written by the first. Guards against the
+        // snapshot being reset to an empty client on launch.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("reopen.hold");
+        let key = vec![5_u8; 32];
+        let web = json!({"userId": "1", "cookies": {"sessionid": "abc", "ds_user_id": "1"}});
+        {
+            let vault = SecretVault::from_parts(path.clone(), key.clone()).unwrap();
+            vault.save_web_session(&web).unwrap();
+        }
+        let reopened = SecretVault::from_parts(path, key).unwrap();
+        assert_eq!(reopened.load_web_session().unwrap(), Some(web));
     }
 }

@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
-import { nativeClient } from './nativeClient';
+import { feedCache, nativeClient } from './nativeClient';
 
 const renderApp = () => render(<MemoryRouter initialEntries={['/']}><App /></MemoryRouter>);
 
@@ -16,6 +16,7 @@ const stubFeedRequests = () => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  feedCache.clear();
   delete window.__TAURI_INTERNALS__;
 });
 

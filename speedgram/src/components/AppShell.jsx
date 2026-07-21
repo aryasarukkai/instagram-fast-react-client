@@ -27,6 +27,7 @@ const navigation = [
 const AppShell = ({ children, wide }) => {
   const { authState, logout } = useAuth();
   const username = authState.user?.username || '';
+  const avatarUrl = authState.user?.profilePictureUrl;
 
   return (
     <div className="ig-shell">
@@ -46,7 +47,7 @@ const AppShell = ({ children, wide }) => {
             </button>
           ))}
           <NavLink className={({ isActive }) => `ig-nav-link${isActive ? ' is-active' : ''}`} to="/profile">
-            <span className="ig-nav-icon"><Avatar username={username} size={24} /></span>
+            <span className="ig-nav-icon"><Avatar src={avatarUrl} username={username} size={24} /></span>
             Profile
           </NavLink>
         </nav>

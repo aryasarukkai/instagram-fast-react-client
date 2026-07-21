@@ -19,7 +19,14 @@ export const AuthProvider = ({ children }) => {
     try {
       const runtimeStatus = await nativeClient.runtimeStatus();
       setRuntime(runtimeStatus);
-      setAuthState(await nativeClient.authState());
+      const next = await nativeClient.authState();
+      // Load the feed/stories/DMs under the bootstrap screen so the app appears
+      // fully populated — no bootstrap-loader-then-feed-loader double flash.
+      if (next.status === 'authenticated') {
+        nativeClient.warmup();
+        await nativeClient.warmupSettled();
+      }
+      setAuthState(next);
     } catch (error) {
       setAuthState(safeErrorState(error));
     }
@@ -74,7 +81,7 @@ export const AuthProvider = ({ children }) => {
         unlisten = await nativeClient.onWebLoginStatus((payload) => {
           switch (payload?.status) {
             case 'authenticated':
-              finish({ status: 'web_captured', userId: payload.userId ?? null });
+              finish({ status: 'authenticated', mode: 'web', user: { username: null, id: payload.userId ?? null } });
               break;
             case 'cancelled':
               finish({ status: 'web_idle', code: 'web_login_cancelled', message: 'The Instagram login window closed before finishing.' });
@@ -106,8 +113,7 @@ export const AuthProvider = ({ children }) => {
         if (username && password) {
           await nativeClient.saveWebCredentials(username.trim(), password);
         }
-        const result = await nativeClient.saveWebSessionManual(cookies);
-        const next = { status: 'web_captured', userId: result?.userId ?? null };
+        const next = await nativeClient.saveWebSessionManual(cookies);
         setAuthState(next);
         return next;
       } catch (error) {
