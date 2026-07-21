@@ -7,13 +7,15 @@ import {
   MessageCircle,
   MoreHorizontal,
   Music2,
+  Maximize2,
   Plus,
   RefreshCw,
   Send,
 } from 'lucide-react';
 import PropTypes from 'prop-types';
 import AppShell from './AppShell';
-import CommentsSheet from './CommentsSheet';
+import PostViewer from './PostViewer';
+import ShareSheet from './ShareSheet';
 import Visual, { Avatar } from './Visual';
 import { feedCache, nativeClient } from '../nativeClient';
 import { useAuth } from '../auth/AuthContext';
@@ -36,14 +38,50 @@ const StoryBubble = ({ story }) => (
 
 StoryBubble.propTypes = { story: PropTypes.object.isRequired };
 
-const PostCard = ({ post, onOpenComments }) => {
+const PostCard = ({ post, onOpenPost, onShare, onEngageError }) => {
   const [liked, setLiked] = useState(Boolean(post.liked));
   const [saved, setSaved] = useState(Boolean(post.saved));
+  const [likeCount, setLikeCount] = useState(post.likeCount || 0);
+  const [busy, setBusy] = useState(null);
   const [expanded, setExpanded] = useState(false);
   const caption = post.caption || '';
   const clipped = caption.length > 140 && !expanded;
   const media = post.imageUrl || post.children?.[0]?.imageUrl;
   const video = post.videoUrl || post.children?.[0]?.videoUrl;
+
+  const toggleLike = async () => {
+    if (busy) return;
+    const next = !liked;
+    setLiked(next);
+    setLikeCount((count) => Math.max(0, count + (next ? 1 : -1)));
+    setBusy('like');
+    try {
+      if (next) await nativeClient.like(post.id, post.trackingToken ?? null);
+      else await nativeClient.unlike(post.id, post.trackingToken ?? null);
+    } catch (error) {
+      setLiked(!next);
+      setLikeCount((count) => Math.max(0, count + (next ? -1 : 1)));
+      onEngageError?.(error?.message || 'Like failed.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const toggleSave = async () => {
+    if (busy) return;
+    const next = !saved;
+    setSaved(next);
+    setBusy('save');
+    try {
+      if (next) await nativeClient.save(post.id, post.loggingInfoToken ?? null);
+      else await nativeClient.unsave(post.id);
+    } catch (error) {
+      setSaved(!next);
+      onEngageError?.(error?.message || 'Save failed.');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <article className="post">
@@ -63,32 +101,51 @@ const PostCard = ({ post, onOpenComments }) => {
         <button className="icon-button" type="button" aria-label="More options" disabled><MoreHorizontal size={20} /></button>
       </header>
 
-      <Visual
-        className="post-visual"
-        imageUrl={media}
-        videoUrl={video}
-        controls
-        alt={`Post by ${post.user.username}`}
-        seed={post.id}
-      >
-        {post.kind === 'carousel' && post.children?.length ? <span className="carousel-count">1 / {post.children.length}</span> : null}
-      </Visual>
+      <div className="post-visual-wrap">
+        <Visual
+          className="post-visual"
+          imageUrl={media}
+          videoUrl={video}
+          controls
+          alt={`Post by ${post.user.username}`}
+          seed={post.id}
+        >
+          {post.kind === 'carousel' && post.children?.length ? <span className="carousel-count">1 / {post.children.length}</span> : null}
+        </Visual>
+        <button className="post-expand" type="button" onClick={() => onOpenPost(post)} aria-label="Open post">
+          <Maximize2 size={17} /> <span>Open</span>
+        </button>
+      </div>
 
       <div className="post-actions">
-        <button className={`action${liked ? ' is-liked' : ''}`} type="button" onClick={() => setLiked((value) => !value)} aria-label="Like" title="Liking arrives with the interaction milestone">
+        <button
+          className={`action${liked ? ' is-liked' : ''}`}
+          type="button"
+          onClick={toggleLike}
+          disabled={busy === 'like'}
+          aria-label={liked ? 'Unlike' : 'Like'}
+        >
           <Heart size={24} strokeWidth={1.8} fill={liked ? 'currentColor' : 'none'} />
         </button>
-        <button className="action" type="button" onClick={() => onOpenComments(post)} aria-label="Comments">
+        <button className="action" type="button" onClick={() => onOpenPost(post)} aria-label="Comments">
           <MessageCircle size={24} strokeWidth={1.8} />
         </button>
-        <button className="action" type="button" disabled aria-label="Share"><Send size={22} strokeWidth={1.8} /></button>
-        <button className={`action save${saved ? ' is-liked' : ''}`} type="button" onClick={() => setSaved((value) => !value)} aria-label="Save">
+        <button className="action" type="button" onClick={() => onShare(post)} aria-label="Share">
+          <Send size={22} strokeWidth={1.8} />
+        </button>
+        <button
+          className={`action save${saved ? ' is-liked' : ''}`}
+          type="button"
+          onClick={toggleSave}
+          disabled={busy === 'save'}
+          aria-label={saved ? 'Unsave' : 'Save'}
+        >
           <Bookmark size={23} strokeWidth={1.8} fill={saved ? 'currentColor' : 'none'} />
         </button>
       </div>
 
       <div className="post-body">
-        {post.likeCount ? <strong className="like-count">{exact.format(post.likeCount)} likes</strong> : null}
+        {likeCount ? <strong className="like-count">{exact.format(likeCount)} likes</strong> : null}
         {caption ? (
           <p className="caption">
             <strong>{post.user.username}</strong>{' '}
@@ -97,7 +154,7 @@ const PostCard = ({ post, onOpenComments }) => {
           </p>
         ) : null}
         {post.commentCount ? (
-          <button className="view-comments" type="button" onClick={() => onOpenComments(post)}>
+          <button className="view-comments" type="button" onClick={() => onOpenPost(post)}>
             View all {compact.format(post.commentCount)} comments
           </button>
         ) : null}
@@ -107,7 +164,12 @@ const PostCard = ({ post, onOpenComments }) => {
   );
 };
 
-PostCard.propTypes = { onOpenComments: PropTypes.func.isRequired, post: PropTypes.object.isRequired };
+PostCard.propTypes = {
+  onEngageError: PropTypes.func,
+  onOpenPost: PropTypes.func.isRequired,
+  onShare: PropTypes.func.isRequired,
+  post: PropTypes.object.isRequired,
+};
 
 const HomePage = () => {
   const { authState } = useAuth();
@@ -118,7 +180,9 @@ const HomePage = () => {
   const [loading, setLoading] = useState(!cached);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
+  const [engageError, setEngageError] = useState(null);
   const [activePost, setActivePost] = useState(null);
+  const [sharePost, setSharePost] = useState(null);
   const [showReload, setShowReload] = useState(false);
 
   const loadStories = useCallback(() => nativeClient.stories(), []);
@@ -193,11 +257,20 @@ const HomePage = () => {
             </section>
           ) : (
             <section className="posts" aria-label="Posts">
-              {posts.map((post) => <PostCard post={post} key={post.id} onOpenComments={setActivePost} />)}
+              {posts.map((post) => (
+                <PostCard
+                  post={post}
+                  key={post.id}
+                  onOpenPost={setActivePost}
+                  onShare={setSharePost}
+                  onEngageError={setEngageError}
+                />
+              ))}
               {!posts.length ? <div className="state-card"><p>Instagram returned no posts for this page.</p></div> : null}
             </section>
           )}
 
+          {engageError ? <p className="inline-error" role="status">{engageError}</p> : null}
           {error && posts.length ? <p className="inline-error" role="status">{error}</p> : null}
           {hasMore ? (
             <button className="load-more" type="button" disabled={loadingMore} onClick={() => load()}>
@@ -218,7 +291,14 @@ const HomePage = () => {
         </aside>
       </div>
 
-      {activePost ? <CommentsSheet post={activePost} onClose={() => setActivePost(null)} /> : null}
+      {activePost ? (
+        <PostViewer
+          post={activePost}
+          onClose={() => setActivePost(null)}
+          onShare={(post) => setSharePost(post)}
+        />
+      ) : null}
+      {sharePost ? <ShareSheet mediaId={sharePost.id} onClose={() => setSharePost(null)} /> : null}
     </AppShell>
   );
 };

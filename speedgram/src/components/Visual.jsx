@@ -28,13 +28,22 @@ Avatar.propTypes = {
 };
 
 /** Media surface: real image or video when Instagram returned one, else a labelled fallback. */
-const Visual = ({ imageUrl, videoUrl, alt, seed, label, className, rounded, controls, children }) => {
+const Visual = ({ imageUrl, videoUrl, alt, seed, label, className, rounded, controls, autoPlay, loop, muted, children }) => {
   const shell = `visual${rounded ? ' is-rounded' : ''}${className ? ` ${className}` : ''}`;
 
   if (videoUrl) {
     return (
       <div className={shell}>
-        <video src={videoUrl} poster={imageUrl || undefined} controls={controls} playsInline preload="metadata" />
+        <video
+          src={videoUrl}
+          poster={imageUrl || undefined}
+          controls={controls}
+          autoPlay={autoPlay}
+          loop={loop}
+          muted={muted}
+          playsInline
+          preload="metadata"
+        />
         {children}
       </div>
     );
@@ -60,11 +69,14 @@ const Visual = ({ imageUrl, videoUrl, alt, seed, label, className, rounded, cont
 
 Visual.propTypes = {
   alt: PropTypes.string,
+  autoPlay: PropTypes.bool,
   children: PropTypes.node,
   className: PropTypes.string,
   controls: PropTypes.bool,
   imageUrl: PropTypes.string,
   label: PropTypes.string,
+  loop: PropTypes.bool,
+  muted: PropTypes.bool,
   rounded: PropTypes.bool,
   seed: PropTypes.string,
   videoUrl: PropTypes.string,

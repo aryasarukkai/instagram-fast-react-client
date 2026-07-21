@@ -231,7 +231,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 npm run tauri build -- --debug --bundles app
 ```
 
-The current verified baseline is 5 React tests, 20 Python tests, and 3 Rust tests,
+The current verified baseline is 15 React tests, 37 Python tests, and 6 Rust tests,
 plus clean lint, Vite build, dependency audit, and Clippy. Update counts when tests
 change; passing counts do not replace live acceptance.
 

@@ -99,6 +99,58 @@ def _normalize_media_asset(media: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _media_liked_by(media: Any) -> list[dict[str, Any]]:
+    """Real liker context returned with feed media, capped for a compact facepile."""
+    read = media.get if isinstance(media, dict) else lambda key, default=None: getattr(media, key, default)
+    top_likers = read("top_likers", []) or []
+    top_names = [_string(value) for value in top_likers if _string(value)]
+    social_context = read("social_context", []) or []
+    social_users: list[Any] = []
+    if isinstance(social_context, dict):
+        social_context = [social_context]
+    for context in social_context if isinstance(social_context, list) else []:
+        context_read = context.get if isinstance(context, dict) else lambda key, default=None: getattr(context, key, default)
+        candidates = context_read("social_context_facepile_users", []) or []
+        if isinstance(candidates, list):
+            social_users.extend(candidates)
+
+    facepile = social_users or (read("facepile_top_likers", []) or [])
+    if not isinstance(facepile, list):
+        facepile = []
+
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, value in enumerate(facepile[:3]):
+        value_read = value.get if isinstance(value, dict) else lambda key, default=None: getattr(value, key, default)
+        username = _string(value_read("username")) or (top_names[index] if index < len(top_names) else "")
+        user_id = _string(value_read("pk") or value_read("id") or value_read("userID"))
+        profile = _url(value_read("profile_pic_url"))
+        identity = user_id or username or profile or str(index)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        normalized.append({
+            "id": user_id,
+            "username": username,
+            "profilePictureUrl": profile,
+        })
+
+    # Some responses provide usernames and facepile photos in parallel arrays.
+    for index, username in enumerate(top_names[:3]):
+        if any(user["username"] == username for user in normalized):
+            continue
+        face = facepile[index] if index < len(facepile) else None
+        face_read = face.get if isinstance(face, dict) else lambda key, default=None: getattr(face, key, default)
+        normalized.append({
+            "id": _string(face_read("pk") or face_read("id") or face_read("userID")),
+            "username": username,
+            "profilePictureUrl": _url(face_read("profile_pic_url")),
+        })
+        if len(normalized) == 3:
+            break
+    return normalized
+
+
 def normalize_timeline_item(media: dict[str, Any]) -> dict[str, Any] | None:
     media_id = _string(media.get("id") or media.get("pk"))
     if not media_id:
@@ -128,9 +180,12 @@ def normalize_timeline_item(media: dict[str, Any]) -> dict[str, Any] | None:
         "takenAt": _integer(media.get("taken_at")),
         "location": _string(location.get("name")),
         "likeCount": _integer(media.get("like_count")),
+        "likedBy": _media_liked_by(media),
         "commentCount": _integer(media.get("comment_count")),
         "liked": bool(media.get("has_liked", False)),
         "saved": bool(media.get("has_viewer_saved", False)),
+        "trackingToken": _string(media.get("organic_tracking_token")) or None,
+        "loggingInfoToken": _string(media.get("logging_info_token")) or None,
         "imageUrl": _best_image(media),
         "videoUrl": _best_video(media),
         "children": children,
@@ -139,6 +194,13 @@ def normalize_timeline_item(media: dict[str, Any]) -> dict[str, Any] | None:
 
 def _url(value: Any) -> str | None:
     return str(value) if value else None
+
+
+def _thread_image_url(value: Any) -> str | None:
+    """Normalize Polaris' optional custom group image without exposing its wrapper."""
+    if isinstance(value, dict):
+        return _url(value.get("url") or value.get("uri"))
+    return _url(value)
 
 
 def _timestamp(value: Any) -> int:
@@ -196,6 +258,7 @@ def normalize_media_model(media: Any) -> dict[str, Any]:
         "takenAt": _timestamp(getattr(media, "taken_at", None)),
         "location": _string(getattr(getattr(media, "location", None), "name", None)),
         "likeCount": _integer(getattr(media, "like_count", 0)),
+        "likedBy": _media_liked_by(media),
         "commentCount": _integer(getattr(media, "comment_count", 0)),
         "viewCount": _integer(getattr(media, "play_count", None) or getattr(media, "view_count", 0)),
         "liked": bool(getattr(media, "has_liked", False)),
@@ -212,6 +275,181 @@ def normalize_media_model(media: Any) -> dict[str, Any]:
             for resource in (getattr(media, "resources", None) or [])
         ],
     }
+
+
+def _model_value(value: Any, key: str, default: Any = None) -> Any:
+    """Read a field from either an instagrapi model or its raw dictionary form."""
+    return value.get(key, default) if isinstance(value, dict) else getattr(value, key, default)
+
+
+def _direct_candidate_url(container: Any, key: str) -> str | None:
+    versions = _model_value(container, key)
+    if isinstance(versions, dict):
+        versions = versions.get("candidates") or versions.get("items") or []
+    if not isinstance(versions, list):
+        return None
+    for version in versions:
+        url = _model_value(version, "url")
+        if url:
+            return _url(url)
+    return None
+
+
+def _direct_media_card(
+    media: Any,
+    *,
+    fallback_id: str,
+    share_type: str,
+    caption: str = "",
+) -> dict[str, Any] | None:
+    if media is None:
+        return None
+    media_type = _integer(_model_value(media, "media_type"))
+    kind = {1: "image", 2: "video", 8: "carousel"}.get(media_type, share_type)
+    image_url = _url(_model_value(media, "thumbnail_url"))
+    image_url = image_url or _direct_candidate_url(_model_value(media, "image_versions2"), "candidates")
+    video_url = _url(_model_value(media, "video_url"))
+    video_url = video_url or _direct_candidate_url(media, "video_versions")
+    audio_url = _url(_model_value(media, "audio_url"))
+    user = _model_value(media, "user")
+    return {
+        "id": _string(_model_value(media, "id") or _model_value(media, "media_id") or fallback_id),
+        "code": _string(_model_value(media, "code")),
+        "kind": kind,
+        "shareType": share_type,
+        "user": _user_short(user) if user is not None else _user_short({}),
+        "caption": caption or _string(_model_value(media, "caption_text")),
+        "imageUrl": image_url,
+        "videoUrl": video_url,
+        "audioUrl": audio_url,
+        "children": [],
+    }
+
+
+def _direct_xma_card(value: Any, *, fallback_id: str, share_type: str) -> dict[str, Any] | None:
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if value is None:
+        return None
+    image_url = _url(_model_value(value, "preview_url") or _model_value(value, "header_icon_url"))
+    video_url = _url(_model_value(value, "video_url"))
+    title = _string(_model_value(value, "title") or _model_value(value, "title_text"))
+    username = _string(_model_value(value, "header_title_text"), "instagram")
+    if not image_url and not video_url and not title:
+        return None
+    return {
+        "id": _string(_model_value(value, "preview_media_fbid") or fallback_id),
+        "code": "",
+        "kind": "video" if video_url else "image",
+        "shareType": share_type,
+        "user": {
+            "id": "",
+            "username": username,
+            "fullName": "",
+            "profilePictureUrl": _url(_model_value(value, "header_icon_url")),
+            "verified": False,
+        },
+        "caption": title,
+        "imageUrl": image_url,
+        "videoUrl": video_url,
+        "audioUrl": None,
+        "children": [],
+    }
+
+
+def _direct_message_share(message: Any, item_id: str) -> dict[str, Any] | None:
+    for field, share_type in (("clip", "reel"), ("media_share", "post")):
+        value = _model_value(message, field)
+        if value is not None:
+            card = normalize_media_model(value)
+            card["shareType"] = share_type
+            card["audioUrl"] = None
+            return card
+
+    media = _model_value(message, "media")
+    if media is not None:
+        audio_url = _url(_model_value(media, "audio_url"))
+        return _direct_media_card(
+            media,
+            fallback_id=item_id,
+            share_type="voice" if audio_url else "attachment",
+        )
+
+    visual = _model_value(message, "visual_media")
+    if visual is not None:
+        content = _model_value(visual, "media")
+        return _direct_media_card(content, fallback_id=item_id, share_type="disappearing")
+
+    for field, share_type in (("xma_share", "post"), ("generic_xma", "post")):
+        card = _direct_xma_card(_model_value(message, field), fallback_id=item_id, share_type=share_type)
+        if card:
+            return card
+
+    for field, share_type in (("reel_share", "reel"), ("story_share", "story"), ("felix_share", "video")):
+        payload = _model_value(message, field)
+        if not isinstance(payload, dict):
+            continue
+        nested = payload.get("media") or payload.get("clip") or payload.get("reel")
+        if isinstance(nested, dict):
+            card = normalize_timeline_item(nested)
+            if card:
+                card["shareType"] = share_type
+                card["audioUrl"] = None
+                return card
+        card = _direct_xma_card(payload, fallback_id=item_id, share_type=share_type)
+        if card:
+            return card
+
+    link = _model_value(message, "link")
+    context = _model_value(link, "link_context") if link is not None else None
+    if context is not None:
+        return {
+            "id": _string(_model_value(context, "link_url") or item_id),
+            "code": "",
+            "kind": "link",
+            "shareType": "link",
+            "user": _user_short({}),
+            "caption": _string(_model_value(context, "link_title") or _model_value(context, "link_summary")),
+            "imageUrl": _url(_model_value(context, "link_image_url")),
+            "videoUrl": None,
+            "audioUrl": None,
+            "url": _url(_model_value(context, "link_url")),
+            "children": [],
+        }
+
+    animated = _model_value(message, "animated_media")
+    if isinstance(animated, dict):
+        images = animated.get("images") or {}
+        preview = images.get("fixed_height") or images.get("fixed_width") or {}
+        image_url = _url(preview.get("url")) if isinstance(preview, dict) else None
+        if image_url:
+            return {
+                "id": item_id,
+                "code": "",
+                "kind": "image",
+                "shareType": "gif",
+                "user": _user_short({}),
+                "caption": "",
+                "imageUrl": image_url,
+                "videoUrl": None,
+                "audioUrl": None,
+                "children": [],
+            }
+    return None
+
+
+def _direct_reactions(message: Any) -> list[str]:
+    reactions = _model_value(message, "reactions")
+    if reactions is None:
+        return []
+    likes = _model_value(reactions, "likes", []) or []
+    count = len(likes) or _integer(_model_value(reactions, "likes_count"))
+    out = ["❤️"] * count
+    for reaction in _model_value(reactions, "emojis", []) or []:
+        emoji = _string(_model_value(reaction, "emoji"))
+        if emoji:
+            out.append(emoji)
+    return out
 
 
 def normalize_story_tray(payload: dict[str, Any], viewer_id: str = "") -> dict[str, Any]:
@@ -265,28 +503,37 @@ def _web_share(item: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(media, dict):
             share = normalize_timeline_item(media)
             if share:
+                share["shareType"] = "post"
+                share["audioUrl"] = None
                 return share
     clip = item.get("clip")
     if isinstance(clip, dict):
         media = clip.get("clip") if isinstance(clip.get("clip"), dict) else clip
         share = normalize_timeline_item(media) if isinstance(media, dict) else None
         if share:
+            share["shareType"] = "reel"
+            share["audioUrl"] = None
             return share
     visual = item.get("visual_media")
     if isinstance(visual, dict) and isinstance(visual.get("media"), dict):
         share = normalize_timeline_item(visual["media"])
         if share:
+            share["shareType"] = "disappearing"
+            share["audioUrl"] = None
             return share
     # Newer XMA reel/post share cards carry a preview image + target url.
-    for key in ("xma_clip", "xma_media_share", "xma_story_share"):
+    for key in ("xma_clip", "xma_media_share", "xma_story_share", "xma_share", "generic_xma"):
         cards = item.get(key)
-        if isinstance(cards, list) and cards and isinstance(cards[0], dict):
-            card = cards[0]
+        card = cards[0] if isinstance(cards, list) and cards else cards
+        if isinstance(card, dict):
             preview = card.get("preview_url") or card.get("header_icon_url")
-            if preview:
+            video = card.get("video_url")
+            if preview or video:
+                share_type = "reel" if key == "xma_clip" else ("story" if key == "xma_story_share" else "post")
                 return {
                     "id": _string(card.get("target_url") or item.get("item_id")),
-                    "kind": "clip",
+                    "kind": "video" if video else "image",
+                    "shareType": share_type,
                     "user": {
                         "username": _string(card.get("header_title_text"), "instagram"),
                         "fullName": "",
@@ -295,7 +542,8 @@ def _web_share(item: dict[str, Any]) -> dict[str, Any] | None:
                     },
                     "caption": _string(card.get("title_text")),
                     "imageUrl": _url(preview),
-                    "videoUrl": None,
+                    "videoUrl": _url(video),
+                    "audioUrl": None,
                     "children": [],
                 }
     return None
@@ -345,6 +593,11 @@ def _normalize_web_grid_media(node: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _media_pk(media_id: str) -> str:
+    """Bare media pk — web GraphQL likes/saves reject the `{pk}_{user}` form."""
+    return _string(media_id).split("_", 1)[0]
+
+
 def _web_reply_text(item: dict[str, Any]) -> str | None:
     quoted = item.get("replied_to_message") or item.get("reply")
     if isinstance(quoted, dict):
@@ -368,8 +621,15 @@ def _web_reactions(item: dict[str, Any]) -> list[str]:
 
 def _normalize_web_message(message: dict[str, Any], viewer_id: str) -> dict[str, Any]:
     user_id = _string(message.get("user_id"))
+    item_id = _string(message.get("item_id") or message.get("id"))
+    # Prefer the GraphQL `mid.$…` form when present — reactions/read/reply need it.
+    message_id = _string(message.get("message_id") or message.get("client_context")) or item_id
+    if message_id and not message_id.startswith("mid.") and item_id.startswith("mid."):
+        message_id = item_id
     return {
-        "id": _string(message.get("item_id") or message.get("id")),
+        "id": item_id,
+        "messageId": message_id or item_id,
+        "clientContext": _string(message.get("client_context") or message.get("offline_threading_id")) or None,
         "userId": user_id,
         "mine": bool(viewer_id and user_id == viewer_id),
         "kind": _string(message.get("item_type"), "text"),
@@ -403,11 +663,238 @@ def _normalize_web_thread(thread: dict[str, Any], viewer_id: str) -> dict[str, A
         "title": title,
         "users": users,
         "isGroup": bool(thread.get("is_group", False)),
+        "threadImageUrl": _thread_image_url(thread.get("thread_image_url")),
         "muted": bool(thread.get("muted", False)),
         "pending": bool(thread.get("pending", False)),
         "lastActivityAt": _web_seconds(last_activity),
         "unread": unread,
+        "lastReadMessageId": _string((items[0] if items and isinstance(items[0], dict) else {}).get("message_id")) or None,
         "messages": list(reversed(messages)),
+    }
+
+
+def _slide_share(message: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize Polaris Slide/XMA message content without exposing raw payloads."""
+    content = message.get("content") if isinstance(message.get("content"), dict) else {}
+    content_type = _string(message.get("content_type"))
+    xma = content.get("xma") if isinstance(content.get("xma"), dict) else None
+    if xma:
+        preview = xma.get("preview_image") if isinstance(xma.get("preview_image"), dict) else {}
+        icon = xma.get("header_icon") if isinstance(xma.get("header_icon"), dict) else {}
+        target_url = _string(xma.get("target_url"))
+        share_type = "story" if content_type == "MONTAGE_SHARE_XMA" else (
+            "reel" if "/reel/" in target_url or "/reels/" in target_url else "post"
+        )
+        return {
+            "id": _string(xma.get("target_id") or message.get("message_id") or message.get("id")),
+            "code": "",
+            "kind": "video" if share_type in {"reel", "story"} else "image",
+            "shareType": share_type,
+            "user": {
+                "id": "",
+                "username": _string(xma.get("header_title_text"), "instagram"),
+                "fullName": "",
+                "profilePictureUrl": _url(icon.get("url")),
+                "verified": _string(xma.get("verified_type")).lower() not in {"", "none", "not_verified"},
+            },
+            "caption": _string(xma.get("title_text") or content.get("xma_text_body")),
+            "imageUrl": _url(preview.get("url") or preview.get("fallback_url")),
+            "videoUrl": None,
+            "audioUrl": None,
+            "children": [],
+        }
+
+    attachments = content.get("attachments") if isinstance(content.get("attachments"), list) else []
+    if attachments and isinstance(attachments[0], dict):
+        attachment = attachments[0]
+        return {
+            "id": _string(attachment.get("attachment_fbid") or message.get("message_id")),
+            "code": "",
+            "kind": "image",
+            "shareType": "attachment",
+            "user": _user_short({}),
+            "caption": "",
+            "imageUrl": _url(attachment.get("attachment_cdn_url") or attachment.get("preview_cdn_url")),
+            "videoUrl": None,
+            "audioUrl": None,
+            "children": [],
+        }
+
+    animated = content.get("animated_media")
+    if isinstance(animated, dict):
+        animated = [animated]
+    if isinstance(animated, list) and animated and isinstance(animated[0], dict):
+        media = animated[0]
+        return {
+            "id": _string(message.get("message_id") or message.get("id")),
+            "code": "",
+            "kind": "video" if media.get("attachment_mp4_url") else "image",
+            "shareType": "gif",
+            "user": _user_short({}),
+            "caption": _string(media.get("alt_text")),
+            "imageUrl": _url(media.get("attachment_webp_url") or media.get("preview_cdn_url")),
+            "videoUrl": _url(media.get("attachment_mp4_url")),
+            "audioUrl": None,
+            "children": [],
+        }
+
+    preview_url = _url(content.get("preview_url"))
+    if preview_url:
+        return {
+            "id": _string(message.get("message_id") or message.get("id")),
+            "code": "",
+            "kind": "image",
+            "shareType": "sticker",
+            "user": _user_short({}),
+            "caption": _string(content.get("alt_text")),
+            "imageUrl": preview_url,
+            "videoUrl": None,
+            "audioUrl": None,
+            "children": [],
+        }
+    return None
+
+
+def _slide_reactions(message: dict[str, Any]) -> list[str]:
+    raw = message.get("msg_reactions") or message.get("reactions") or []
+    if not isinstance(raw, list):
+        return []
+    reactions: list[str] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        value = _string(item.get("reaction") or item.get("emoji"))
+        if value:
+            reactions.append(value)
+    return reactions
+
+
+def _slide_user(user: dict[str, Any]) -> dict[str, Any]:
+    """Use the messaging FBID namespace emitted by Slide message senders."""
+    normalized = _user_short(user)
+    normalized["id"] = _string(
+        user.get("interop_messaging_user_fbid")
+        or user.get("fbid_v2")
+        or user.get("id")
+        or user.get("pk")
+    )
+    return normalized
+
+
+def _slide_reply_preview(message: dict[str, Any]) -> str | None:
+    """Return the quoted text or a useful label for replied-to rich media."""
+    replied = message.get("replied_to_message")
+    if not isinstance(replied, dict):
+        return None
+    content = replied.get("content") if isinstance(replied.get("content"), dict) else {}
+    text = _string(content.get("text_body") or replied.get("text_body")).strip()
+    if text:
+        return text
+    share = _slide_share(replied)
+    if share:
+        label = {
+            "reel": "Reel",
+            "story": "Story",
+            "gif": "GIF",
+            "attachment": "Photo",
+            "sticker": "Sticker",
+        }.get(_string(share.get("shareType")), "Post")
+        username = _string((share.get("user") or {}).get("username"))
+        if username and username != "instagram":
+            return f"{label} from @{username.lstrip('@')}"
+        return label
+    content_type = _string(replied.get("content_type")).upper()
+    if "ANIMATED" in content_type:
+        return "GIF"
+    if "VOICE" in content_type or "AUDIO" in content_type:
+        return "Voice message"
+    return "Attachment"
+
+
+def _slide_last_preview(edges: list[Any], viewer_id: str) -> str | None:
+    """Surface invisible reaction activity in the inbox without rendering a log bubble."""
+    for edge in edges:
+        node = edge.get("node") if isinstance(edge, dict) else None
+        if not isinstance(node, dict):
+            continue
+        if node.get("content_type") != "REACTION_LOG_XMAT":
+            return None
+        sender_id = _string(node.get("sender_fbid") or (node.get("sender") or {}).get("id"))
+        return "You liked a message" if viewer_id and sender_id == viewer_id else "Liked a message"
+    return None
+
+
+def _slide_latest_message_id(edges: list[Any]) -> str | None:
+    for edge in edges:
+        node = edge.get("node") if isinstance(edge, dict) else None
+        if not isinstance(node, dict):
+            continue
+        return _string(node.get("message_id") or node.get("id")) or None
+    return None
+
+
+def _normalize_slide_message(message: dict[str, Any], viewer_id: str) -> dict[str, Any]:
+    content = message.get("content") if isinstance(message.get("content"), dict) else {}
+    sender = message.get("sender") if isinstance(message.get("sender"), dict) else {}
+    sender_user = sender.get("user_dict") if isinstance(sender.get("user_dict"), dict) else {}
+    sender_id = _string(
+        message.get("sender_fbid")
+        or sender.get("id")
+        or sender_user.get("interop_messaging_user_fbid")
+        or sender_user.get("fbid_v2")
+        or sender.get("igid")
+        or sender_user.get("id")
+    )
+    message_id = _string(message.get("message_id") or message.get("id"))
+    timestamp_ms = _integer(message.get("timestamp_ms"))
+    return {
+        "id": _string(message.get("id") or message_id),
+        "messageId": message_id,
+        "clientContext": _string(message.get("offline_threading_id")) or None,
+        "userId": sender_id,
+        "mine": bool(viewer_id and sender_id == viewer_id),
+        "kind": _string(message.get("content_type"), "text").lower(),
+        "text": _string(content.get("text_body") or message.get("text_body")),
+        "timestamp": timestamp_ms // 1000 if timestamp_ms > 10_000_000_000 else timestamp_ms,
+        "share": _slide_share(message),
+        "reply": _slide_reply_preview(message),
+        "reactions": _slide_reactions(message),
+    }
+
+
+def _normalize_slide_thread(thread: dict[str, Any]) -> dict[str, Any]:
+    viewer = thread.get("viewer") if isinstance(thread.get("viewer"), dict) else {}
+    viewer_id = _string(
+        viewer.get("interop_messaging_user_fbid")
+        or viewer.get("fbid_v2")
+        or thread.get("viewer_id")
+        or viewer.get("id")
+    )
+    users = [_slide_user(user) for user in (thread.get("users") or []) if isinstance(user, dict)]
+    edges = (thread.get("slide_messages") or {}).get("edges") or []
+    messages = [
+        _normalize_slide_message(edge["node"], viewer_id)
+        for edge in reversed(edges)
+        if isinstance(edge, dict) and isinstance(edge.get("node"), dict)
+        and edge["node"].get("content_type") not in {
+            "REACTION_LOG_XMAT", "ADD_PARTICIPANT_XMAT", "REMOVE_PARTICIPANT_XMAT",
+        }
+    ]
+    title = _string(thread.get("thread_title")) or ", ".join(user["username"] for user in users)
+    last_activity_ms = _integer(thread.get("last_activity_timestamp_ms"))
+    return {
+        "id": _string(thread.get("thread_id") or thread.get("id")),
+        "title": title,
+        "users": users,
+        "isGroup": bool(thread.get("is_group", False)),
+        "threadImageUrl": _thread_image_url(thread.get("thread_image_url")),
+        "muted": bool(thread.get("is_muted", False)),
+        "pending": _string(thread.get("folder")).lower() in {"pending", "requests"},
+        "lastActivityAt": last_activity_ms // 1000 if last_activity_ms > 10_000_000_000 else last_activity_ms,
+        "unread": bool(thread.get("marked_as_unread", False)),
+        "lastPreview": _slide_last_preview(edges, viewer_id),
+        "lastReadMessageId": _slide_latest_message_id(edges),
+        "messages": messages,
     }
 
 
@@ -428,6 +915,7 @@ def normalize_thread(thread: Any, viewer_id: str) -> dict[str, Any]:
     users = [_user_short(user) for user in (getattr(thread, "users", None) or [])]
     title = _string(getattr(thread, "thread_title", None)) or ", ".join(user["username"] for user in users)
     messages = [normalize_direct_message(message) for message in (getattr(thread, "messages", None) or [])]
+    latest_message_id = messages[0]["messageId"] if messages else None
     is_seen = getattr(thread, "is_seen", None)
     seen = True
     if callable(is_seen) and viewer_id:
@@ -440,26 +928,31 @@ def normalize_thread(thread: Any, viewer_id: str) -> dict[str, Any]:
         "title": title,
         "users": users,
         "isGroup": bool(getattr(thread, "is_group", False)),
+        "threadImageUrl": _thread_image_url(getattr(thread, "thread_image_url", None)),
         "muted": bool(getattr(thread, "muted", False)),
         "pending": bool(getattr(thread, "pending", False)),
         "lastActivityAt": _timestamp(getattr(thread, "last_activity_at", None)),
         "unread": not seen,
+        "lastReadMessageId": latest_message_id,
         "messages": list(reversed(messages)),
     }
 
 
 def normalize_direct_message(message: Any) -> dict[str, Any]:
     item_type = _string(getattr(message, "item_type", None), "text")
-    shared = getattr(message, "media_share", None) or getattr(message, "clip", None)
+    item_id = _string(getattr(message, "id", None))
     return {
-        "id": _string(getattr(message, "id", None)),
+        "id": item_id,
+        "messageId": item_id,
+        "clientContext": _string(getattr(message, "client_context", None)) or None,
         "userId": _string(getattr(message, "user_id", None)),
         "mine": bool(getattr(message, "is_sent_by_viewer", False)),
         "kind": item_type,
         "text": _string(getattr(message, "text", None)),
         "timestamp": _timestamp(getattr(message, "timestamp", None)),
-        "share": normalize_media_model(shared) if shared is not None else None,
+        "share": _direct_message_share(message, item_id),
         "reply": _string(getattr(getattr(message, "reply", None), "text", None)) or None,
+        "reactions": _direct_reactions(message),
     }
 
 
@@ -594,6 +1087,12 @@ class ProtocolEngine:
         self._operation_id: str | None = None
         self._pending_code: str | None = None
         self._state = self._signed_out()
+        self._web_actor_id_cache: str | None = None
+        self._web_mutation_counter = 0
+        self._web_device_id = str(uuid.uuid4())
+        self._web_thread_keys: dict[str, str] = {}
+        self._web_token_cache: dict[str, str] | None = None
+        self._web_token_owner: str | None = None
 
     @staticmethod
     def _signed_out() -> dict[str, Any]:
@@ -943,6 +1442,38 @@ class ProtocolEngine:
         comments = self._guarded(lambda: client.media_comments(media_id, amount=amount), "comments")
         return {"items": [normalize_comment(comment) for comment in (comments or [])]}
 
+    def media_like(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        media_id = _media_pk(_string((params or {}).get("mediaId")))
+        if not media_id:
+            raise ProtocolError("invalid_request", "A media id is required.")
+        self._guarded(lambda: client.media_like(media_id), "like")
+        return {"liked": True, "mediaId": media_id}
+
+    def media_unlike(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        media_id = _media_pk(_string((params or {}).get("mediaId")))
+        if not media_id:
+            raise ProtocolError("invalid_request", "A media id is required.")
+        self._guarded(lambda: client.media_unlike(media_id), "unlike")
+        return {"liked": False, "mediaId": media_id}
+
+    def media_save(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        media_id = _media_pk(_string((params or {}).get("mediaId")))
+        if not media_id:
+            raise ProtocolError("invalid_request", "A media id is required.")
+        self._guarded(lambda: client.media_save(media_id), "save")
+        return {"saved": True, "mediaId": media_id}
+
+    def media_unsave(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        media_id = _media_pk(_string((params or {}).get("mediaId")))
+        if not media_id:
+            raise ProtocolError("invalid_request", "A media id is required.")
+        self._guarded(lambda: client.media_unsave(media_id), "unsave")
+        return {"saved": False, "mediaId": media_id}
+
     def user_profile(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         client = self._require_client()
         username = _string((params or {}).get("username")) or _string(self._username)
@@ -1001,8 +1532,40 @@ class ProtocolEngine:
         text = _string(params.get("text")).strip()
         if not thread_id or not text:
             raise ProtocolError("invalid_request", "A thread id and message text are required.")
+        # Mobile direct_answer has no reply-id argument; replyToMessageId is web-only.
         message = self._guarded(lambda: client.direct_answer(thread_id, text), "this message")
         return {"message": normalize_direct_message(message)}
+
+    def direct_mark_read(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        params = params or {}
+        thread_id = _string(params.get("threadId"))
+        message_id = _string(params.get("messageId"))
+        if not thread_id or not message_id:
+            raise ProtocolError("invalid_request", "A thread id and message id are required.")
+        exact_seen = getattr(client, "direct_message_seen", None)
+        if callable(exact_seen):
+            self._guarded(lambda: exact_seen(thread_id, message_id), "read receipt")
+            return {"ok": True}
+        seen = getattr(client, "direct_send_seen", None)
+        if not callable(seen):
+            return {"ok": False}
+        self._guarded(lambda: seen(thread_id), "read receipt")
+        return {"ok": True}
+
+    def direct_react(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        params = params or {}
+        thread_id = _string(params.get("threadId"))
+        message_id = _string(params.get("messageId"))
+        emoji = _string(params.get("emoji"))
+        if not thread_id or not message_id or not emoji:
+            raise ProtocolError("invalid_request", "A thread id, message id, and emoji are required.")
+        react = getattr(client, "direct_send_reaction", None)
+        if not callable(react):
+            raise ProtocolError("unsupported_action", "Message reactions are not available.")
+        self._guarded(lambda: react(thread_id, message_id, emoji=emoji), "reaction")
+        return {"ok": True, "emoji": emoji, "messageId": message_id}
 
     def direct_notes(self, _params: dict[str, Any] | None = None) -> dict[str, Any]:
         client = self._require_client()
@@ -1145,6 +1708,101 @@ class ProtocolEngine:
             "hs": find(r'"haste_session":"([^"]+)"'),
         }
 
+    def _web_tokens(self, cookies: dict[str, Any]) -> dict[str, str]:
+        """Cache page-scoped GraphQL tokens in memory for the active web account."""
+        # A digest lets a freshly imported session for the same account invalidate
+        # the cache without retaining another plaintext copy of its cookie values.
+        session_fingerprint = "\x1f".join(
+            _string(cookies.get(name)) for name in ("ds_user_id", "sessionid", "csrftoken")
+        )
+        owner = hashlib.sha256(session_fingerprint.encode("utf-8")).hexdigest()
+        if self._web_token_cache is not None and self._web_token_owner == owner:
+            return self._web_token_cache
+        tokens = self._fetch_web_tokens(cookies)
+        self._web_token_cache = tokens
+        self._web_token_owner = owner
+        return tokens
+
+    def _web_actor_id(self, cookies: dict[str, Any]) -> str:
+        """FBID used as actor_id / av for Polaris like/save mutations (not ds_user_id)."""
+        if self._web_actor_id_cache:
+            return self._web_actor_id_cache
+        user_id = _string(cookies.get("ds_user_id"))
+        if not user_id:
+            raise ProtocolError("not_authenticated", "The web session has no user id.")
+        payload = self._web_request("GET", f"/api/v1/users/{user_id}/info/", cookies)
+        user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+        actor = _string(user.get("fbid_v2") or user.get("fbid") or user.get("pk") or user_id)
+        self._web_actor_id_cache = actor
+        return actor
+
+    def _next_mutation_id(self) -> str:
+        self._web_mutation_counter += 1
+        return str(self._web_mutation_counter)
+
+    def _web_graphql(
+        self,
+        cookies: dict[str, Any],
+        *,
+        friendly_name: str,
+        doc_id: str,
+        variables: dict[str, Any],
+        referer: str | None = None,
+        root_field: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        """POST /api/graphql with the same form body shape as the real Polaris client."""
+        tokens = self._web_tokens(cookies)
+        fb_dtsg = tokens.get("fb_dtsg")
+        if not fb_dtsg:
+            raise ProtocolError(
+                "web_request_failed",
+                "Could not obtain an Instagram send token — try re-importing the session.",
+            )
+        lsd = tokens.get("lsd", "")
+        jazoest = "2" + str(sum(bytearray(fb_dtsg, "utf-8")))
+        av = actor_id or _string(cookies.get("ds_user_id"))
+        data = {
+            "av": av,
+            "__a": "1",
+            "__comet_req": "7",
+            "fb_dtsg": fb_dtsg,
+            "jazoest": jazoest,
+            "lsd": lsd,
+            "__spin_r": tokens.get("rev", ""),
+            "__spin_b": tokens.get("spin_b", ""),
+            "__spin_t": tokens.get("spin_t", ""),
+            "__rev": tokens.get("rev", ""),
+            "__hs": tokens.get("hs", ""),
+            "fb_api_caller_class": "RelayModern",
+            "fb_api_req_friendly_name": friendly_name,
+            "server_timestamps": "true",
+            "doc_id": doc_id,
+            "variables": json.dumps(variables, separators=(",", ":")),
+        }
+        extra_headers = {
+            "X-FB-Friendly-Name": friendly_name,
+            "X-FB-LSD": lsd,
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        if root_field:
+            extra_headers["X-Root-Field-Name"] = root_field
+        response = self._web_send_raw(
+            "POST",
+            "/api/graphql",
+            cookies,
+            data=data,
+            referer=referer or f"{_WEB_BASE}/",
+            extra_headers=extra_headers,
+        )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ProtocolError("web_request_failed", "Instagram returned an unexpected response.") from exc
+        if response.status_code != 200 or payload.get("errors"):
+            raise ProtocolError("web_request_failed", "Instagram rejected the request.")
+        return payload if isinstance(payload, dict) else {}
+
     def web_timeline(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         cookies = self._web_cookies(params)
         cursor = (params or {}).get("cursor")
@@ -1163,8 +1821,7 @@ class ProtocolEngine:
 
     def web_comments(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         cookies = self._web_cookies(params)
-        # The feed ids come as "{pk}_{user_id}"; the comments endpoint wants the bare pk.
-        media_id = _string((params or {}).get("mediaId")).split("_", 1)[0]
+        media_id = _media_pk(_string((params or {}).get("mediaId")))
         if not media_id:
             raise ProtocolError("invalid_request", "A media id is required.")
         payload = self._web_request(
@@ -1181,30 +1838,62 @@ class ProtocolEngine:
 
     def web_threads(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         cookies = self._web_cookies(params)
-        viewer = _string(cookies.get("ds_user_id"))
-        payload = self._web_request("GET", "/api/v1/direct_v2/inbox/?persistentBadging=true&limit=20", cookies)
-        inbox = payload.get("inbox") if isinstance(payload.get("inbox"), dict) else {}
-        threads = inbox.get("threads") if isinstance(inbox.get("threads"), list) else []
-        return {"items": [_normalize_web_thread(t, viewer) for t in threads if isinstance(t, dict)]}
+        variables = {
+            "device_id_for_iris_subscription": self._web_device_id,
+            "__relay_internal__pv__IGDIsProfessionalAccountGKrelayprovider": False,
+            "__relay_internal__pv__IGDPinnedThreadsRenderEnabledGKrelayprovider": True,
+            "__relay_internal__pv__IGDMaxUnreadMessagesCountrelayprovider": 5,
+            "__relay_internal__pv__PolarisAIGMAccountLabelEnabledrelayprovider": False,
+            "__relay_internal__pv__IGDThreadListActionsEnabledGKrelayprovider": True,
+        }
+        payload = self._web_graphql(
+            cookies,
+            friendly_name="PolarisDirectInboxQuery",
+            doc_id="27262915580045003",
+            variables=variables,
+            referer=f"{_WEB_BASE}/direct/inbox/",
+        )
+        mailbox = (payload.get("data") or {}).get("get_slide_mailbox_for_iris_subscription") or {}
+        edges = ((mailbox.get("threads_by_folder") or {}).get("edges") or [])
+        raw_threads = [
+            (edge.get("node") or {}).get("as_ig_direct_thread")
+            for edge in edges
+            if isinstance(edge, dict)
+        ]
+        threads = [thread for thread in raw_threads if isinstance(thread, dict)]
+        self._web_thread_keys = {
+            _string(thread.get("thread_id") or thread.get("id")): _string(
+                thread.get("thread_key") or thread.get("thread_fbid")
+            )
+            for thread in threads
+        }
+        return {"items": [_normalize_slide_thread(thread) for thread in threads]}
 
     def web_thread(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         cookies = self._web_cookies(params)
-        viewer = _string(cookies.get("ds_user_id"))
         thread_id = _string((params or {}).get("threadId"))
         if not thread_id:
             raise ProtocolError("invalid_request", "A thread id is required.")
-        payload = self._web_request(
-            "GET", f"/api/v1/direct_v2/threads/{thread_id}/?limit=40", cookies
+        thread_key = self._web_thread_keys.get(thread_id, thread_id)
+        variables = {
+            "min_uq_seq_id": None,
+            "thread_fbid": thread_key,
+            "__relay_internal__pv__IGDEnableOffMsysChatThemesQErelayprovider": False,
+            "__relay_internal__pv__IGDInitialMessagePageCountrelayprovider": 20,
+            "__relay_internal__pv__PolarisAIGMAccountLabelEnabledrelayprovider": False,
+        }
+        payload = self._web_graphql(
+            cookies,
+            friendly_name="IGDThreadDetailQuery",
+            doc_id="28395443243391552",
+            variables=variables,
+            referer=f"{_WEB_BASE}/direct/t/{thread_id}/",
         )
-        thread = payload.get("thread") if isinstance(payload.get("thread"), dict) else payload
-        items = thread.get("items") if isinstance(thread.get("items"), list) else []
-        messages = [
-            _normalize_web_message(m, viewer)
-            for m in items
-            if isinstance(m, dict) and m.get("item_type") != "action_log"
-        ]
-        # API items are newest-first; reverse for top-to-bottom display.
-        return {"items": list(reversed(messages))}
+        container = (payload.get("data") or {}).get("get_slide_thread_nullable") or {}
+        thread = container.get("as_ig_direct_thread")
+        if not isinstance(thread, dict):
+            raise ProtocolError("web_request_failed", "Instagram did not return this conversation.")
+        return {"items": _normalize_slide_thread(thread)["messages"]}
 
     def web_send(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         cookies = self._web_cookies(params)
@@ -1213,21 +1902,9 @@ class ProtocolEngine:
         text = _string((params or {}).get("text")).strip()
         if not thread_id or not text:
             raise ProtocolError("invalid_request", "A thread id and message text are required.")
-        tokens = self._fetch_web_tokens(cookies)
-        fb_dtsg = tokens.get("fb_dtsg")
-        if not fb_dtsg:
-            raise ProtocolError(
-                "web_request_failed",
-                "Could not obtain an Instagram send token — try re-importing the session.",
-            )
-        lsd = tokens.get("lsd", "")
-        jazoest = "2" + str(sum(bytearray(fb_dtsg, "utf-8")))
         offline_threading_id = str(secrets.randbits(63))
         reply_to = _string((params or {}).get("replyToMessageId")) or None
-        # The REST thread exposes numeric item_ids; the GraphQL `mid.$...` form goes
-        # in reply_to_message_id, the numeric form in replied_to_item_id.
         is_mid = bool(reply_to and reply_to.startswith("mid."))
-        # Matches the real web client's IGDirectTextSendMutation variables shape.
         variables = {
             "ig_thread_igid": thread_id,
             "offline_threading_id": offline_threading_id,
@@ -1244,47 +1921,19 @@ class ProtocolEngine:
             "is_forwarded_from_own_message": None,
             "send_attribution": "igd_web_chat_tab:in_thread",
         }
-        data = {
-            "av": viewer,
-            "__a": "1",
-            "__comet_req": "7",
-            "fb_dtsg": fb_dtsg,
-            "jazoest": jazoest,
-            "lsd": lsd,
-            "__spin_r": tokens.get("rev", ""),
-            "__spin_b": tokens.get("spin_b", ""),
-            "__spin_t": tokens.get("spin_t", ""),
-            "__rev": tokens.get("rev", ""),
-            "__hs": tokens.get("hs", ""),
-            "fb_api_caller_class": "RelayModern",
-            "fb_api_req_friendly_name": "IGDirectTextSendMutation",
-            "server_timestamps": "true",
-            "doc_id": "26911679871773184",
-            "variables": json.dumps(variables, separators=(",", ":")),
-        }
-        extra_headers = {
-            "X-FB-Friendly-Name": "IGDirectTextSendMutation",
-            "X-FB-LSD": lsd,
-            "X-Root-Field-Name": "xdt_send_message",
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-        response = self._web_send_raw(
-            "POST",
-            "/api/graphql",
+        self._web_graphql(
             cookies,
-            data=data,
+            friendly_name="IGDirectTextSendMutation",
+            doc_id="26911679871773184",
+            variables=variables,
             referer=f"{_WEB_BASE}/direct/t/{thread_id}/",
-            extra_headers=extra_headers,
+            root_field="xdt_send_message",
         )
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise ProtocolError("web_request_failed", "Instagram rejected the message.") from exc
-        if response.status_code != 200 or payload.get("errors"):
-            raise ProtocolError("web_request_failed", "Instagram did not accept the message.")
         return {
             "message": {
                 "id": offline_threading_id,
+                "messageId": f"mid.${offline_threading_id}",
+                "clientContext": offline_threading_id,
                 "userId": viewer,
                 "mine": True,
                 "kind": "text",
@@ -1292,8 +1941,287 @@ class ProtocolEngine:
                 "timestamp": 0,
                 "share": None,
                 "reply": None,
+                "reactions": [],
             }
         }
+
+    def web_like(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        media_id = _media_pk(_string((params or {}).get("mediaId")))
+        if not media_id:
+            raise ProtocolError("invalid_request", "A media id is required.")
+        actor_id = self._web_actor_id(cookies)
+        tracking = _string((params or {}).get("trackingToken")) or None
+        variables = {
+            "input": {
+                "actor_id": actor_id,
+                "client_mutation_id": self._next_mutation_id(),
+                "container_module": "feed_timeline",
+                "media_id": media_id,
+                "tracking_token": tracking,
+            }
+        }
+        self._web_graphql(
+            cookies,
+            friendly_name="usePolarisLikeMediaXIGLikeMutation",
+            doc_id="27182485238052618",
+            variables=variables,
+            actor_id=actor_id,
+        )
+        return {"liked": True, "mediaId": media_id}
+
+    def web_unlike(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        media_id = _media_pk(_string((params or {}).get("mediaId")))
+        if not media_id:
+            raise ProtocolError("invalid_request", "A media id is required.")
+        actor_id = self._web_actor_id(cookies)
+        tracking = _string((params or {}).get("trackingToken")) or None
+        variables = {
+            "input": {
+                "actor_id": actor_id,
+                "client_mutation_id": self._next_mutation_id(),
+                "media_id": media_id,
+                "tracking_token": tracking,
+            }
+        }
+        self._web_graphql(
+            cookies,
+            friendly_name="usePolarisLikeMediaXIGUnlikeMutation",
+            doc_id="27345296031770102",
+            variables=variables,
+            actor_id=actor_id,
+        )
+        return {"liked": False, "mediaId": media_id}
+
+    def web_save(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        media_id = _media_pk(_string((params or {}).get("mediaId")))
+        if not media_id:
+            raise ProtocolError("invalid_request", "A media id is required.")
+        actor_id = self._web_actor_id(cookies)
+        logging_token = _string((params or {}).get("loggingInfoToken")) or None
+        variables = {
+            "input": {
+                "actor_id": actor_id,
+                "client_mutation_id": self._next_mutation_id(),
+                "container_module": "feed_timeline",
+                "inventory_source": "media_or_ad",
+                "logging_info_token": logging_token,
+                "media_id": media_id,
+                "nav_chain": "PolarisFeedRoot:feedPage:1:via_cold_start",
+            }
+        }
+        self._web_graphql(
+            cookies,
+            friendly_name="usePolarisSaveMediaSaveMutation",
+            doc_id="27365486596441074",
+            variables=variables,
+            actor_id=actor_id,
+        )
+        return {"saved": True, "mediaId": media_id}
+
+    def web_unsave(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        media_id = _media_pk(_string((params or {}).get("mediaId")))
+        if not media_id:
+            raise ProtocolError("invalid_request", "A media id is required.")
+        actor_id = self._web_actor_id(cookies)
+        variables = {
+            "input": {
+                "actor_id": actor_id,
+                "client_mutation_id": self._next_mutation_id(),
+                "media_id": media_id,
+            }
+        }
+        self._web_graphql(
+            cookies,
+            friendly_name="usePolarisSaveMediaUnsaveMutation",
+            doc_id="27371251859134880",
+            variables=variables,
+            actor_id=actor_id,
+        )
+        return {"saved": False, "mediaId": media_id}
+
+    def web_mark_read(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        thread_id = _string((params or {}).get("threadId"))
+        message_id = _string((params or {}).get("messageId"))
+        if not thread_id or not message_id:
+            raise ProtocolError("invalid_request", "A thread id and message id are required.")
+        variables = {
+            "metadata": {"ig_thread_igid": thread_id},
+            "data": {"item_id": "", "message_id": message_id},
+        }
+        self._web_graphql(
+            cookies,
+            friendly_name="useIGDMarkThreadAsReadMutation",
+            doc_id="27356881703909995",
+            variables=variables,
+            referer=f"{_WEB_BASE}/direct/t/{thread_id}/",
+        )
+        return {"ok": True}
+
+    def web_react(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        thread_id = _string((params or {}).get("threadId"))
+        message_id = _string((params or {}).get("messageId"))
+        emoji = _string((params or {}).get("emoji"))
+        if not thread_id or not message_id or not emoji:
+            raise ProtocolError("invalid_request", "A thread id, message id, and emoji are required.")
+        variables = {
+            "input": {
+                "emoji": emoji,
+                "item_id": "",
+                "message_id": message_id,
+                "reaction_status": "created",
+                "thread_id": thread_id,
+            }
+        }
+        self._web_graphql(
+            cookies,
+            friendly_name="IGDirectReactionSendMutation",
+            doc_id="24374451552236906",
+            variables=variables,
+            referer=f"{_WEB_BASE}/direct/t/{thread_id}/",
+        )
+        return {"ok": True, "emoji": emoji, "messageId": message_id}
+
+    def web_share_media(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        media_id = _media_pk(_string((params or {}).get("mediaId")))
+        user_id = _string((params or {}).get("userId"))
+        if not media_id or not user_id:
+            raise ProtocolError("invalid_request", "A media id and recipient user id are required.")
+        offline_threading_id = str(secrets.randbits(63))
+        variables = {
+            "send_data": {
+                "forwarded_from_thread_id": None,
+                "is_forwarded_from_own_message": None,
+                "offline_threading_id": offline_threading_id,
+                "recipient_users": json.dumps([user_id]),
+                "thread_id": None,
+            },
+            "data": {"media_id": media_id},
+        }
+        self._web_graphql(
+            cookies,
+            friendly_name="IGDirectMediaShareMutation",
+            doc_id="27442850591982122",
+            variables=variables,
+        )
+        return {"ok": True, "messageId": offline_threading_id}
+
+    def web_forward(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        viewer = _string(cookies.get("ds_user_id"))
+        to_thread = _string((params or {}).get("toThreadId"))
+        from_thread = _string((params or {}).get("fromThreadId"))
+        text = _string((params or {}).get("text")).strip()
+        if not to_thread or not from_thread or not text:
+            raise ProtocolError(
+                "invalid_request",
+                "A destination thread, source thread, and message text are required.",
+            )
+        offline_threading_id = str(secrets.randbits(63))
+        variables = {
+            "ig_thread_igid": to_thread,
+            "offline_threading_id": offline_threading_id,
+            "recipient_igids": None,
+            "replied_to_client_context": None,
+            "replied_to_item_id": None,
+            "reply_to_message_id": None,
+            "sampled": None,
+            "text": {"sensitive_string_value": text},
+            "mentions": None,
+            "mentioned_user_ids": None,
+            "commands": None,
+            "forwarded_from_thread_id": from_thread,
+            "is_forwarded_from_own_message": False,
+            "send_attribution": None,
+        }
+        self._web_graphql(
+            cookies,
+            friendly_name="IGDirectTextSendMutation",
+            doc_id="26911679871773184",
+            variables=variables,
+            referer=f"{_WEB_BASE}/direct/t/{to_thread}/",
+            root_field="xdt_send_message",
+        )
+        return {
+            "message": {
+                "id": offline_threading_id,
+                "messageId": f"mid.${offline_threading_id}",
+                "userId": viewer,
+                "mine": True,
+                "kind": "text",
+                "text": text,
+                "timestamp": 0,
+                "share": None,
+                "reply": None,
+                "reactions": [],
+            }
+        }
+
+    def web_translate(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        message_id = _string((params or {}).get("messageId"))
+        content = _string((params or {}).get("text"))
+        if not message_id or not content:
+            raise ProtocolError("invalid_request", "A message id and text are required.")
+        dialect = _string((params or {}).get("dialect")) or "en_US"
+        variables = {
+            "message_id": message_id,
+            "content": content,
+            "target_dialect_code": dialect,
+        }
+        payload = self._web_graphql(
+            cookies,
+            friendly_name="IGDMessageTranslationStoreQuery",
+            doc_id="27167970989506587",
+            variables=variables,
+        )
+        rows = (payload.get("data") or {}).get("igd_detect_and_translate_text_content_query")
+        if not isinstance(rows, list) or not rows:
+            raise ProtocolError("translate_unavailable", "Translation is not available for this message.")
+        row = rows[0] if isinstance(rows[0], dict) else {}
+        translated = _string(row.get("translated_text")) or None
+        if not translated or row.get("error_code"):
+            raise ProtocolError("translate_unavailable", "Translation is not available for this message.")
+        return {"translatedText": translated, "messageId": message_id}
+
+    def web_share_targets(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        variables = {
+            "input": {
+                "count_per_page": 20,
+                "is_private_share": False,
+                "views": ["RESHARE_SHARE_SHEET"],
+            }
+        }
+        payload = self._web_graphql(
+            cookies,
+            friendly_name="PolarisShareSheetV3NullStateQuery",
+            doc_id="36651079954537487",
+            variables=variables,
+        )
+        ranked = ((payload.get("data") or {}).get("get_paginated_share_sheet_ranked_items") or {}).get(
+            "ranked_items"
+        )
+        items: list[dict[str, Any]] = []
+        if isinstance(ranked, list):
+            for entry in ranked:
+                if not isinstance(entry, dict):
+                    continue
+                thread_id = _string(entry.get("thread_id") or entry.get("share_sheet_item_id"))
+                title = _string(entry.get("thread_title"))
+                users_raw = entry.get("users") if isinstance(entry.get("users"), list) else []
+                users = [_user_short(u) for u in users_raw if isinstance(u, dict)]
+                if not title and users:
+                    title = ", ".join(u["username"] for u in users)
+                if thread_id:
+                    items.append({"threadId": thread_id, "title": title, "users": users})
+        return {"items": items}
 
     def _web_profile_info(self, cookies: dict[str, Any], username: str) -> dict[str, Any]:
         if not username:
@@ -1335,6 +2263,9 @@ class ProtocolEngine:
             raise ProtocolError("not_authenticated", "The web session has no user id.")
         payload = self._web_request("GET", f"/api/v1/users/{user_id}/info/", cookies)
         user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+        actor = _string(user.get("fbid_v2") or user.get("fbid"))
+        if actor:
+            self._web_actor_id_cache = actor
         return {
             "id": _string(user.get("pk") or user_id),
             "username": _string(user.get("username")),
@@ -1354,6 +2285,16 @@ class ProtocolEngine:
             "web.threads": self.web_threads,
             "web.thread": self.web_thread,
             "web.send": self.web_send,
+            "web.like": self.web_like,
+            "web.unlike": self.web_unlike,
+            "web.save": self.web_save,
+            "web.unsave": self.web_unsave,
+            "web.mark_read": self.web_mark_read,
+            "web.react": self.web_react,
+            "web.share_media": self.web_share_media,
+            "web.forward": self.web_forward,
+            "web.translate": self.web_translate,
+            "web.share_targets": self.web_share_targets,
             "auth.state": self.auth_state,
             "auth.login": self.auth_login,
             "auth.restore": self.auth_restore,
@@ -1368,12 +2309,18 @@ class ProtocolEngine:
             "feed.reels": self.feed_reels,
             "feed.explore": self.feed_explore,
             "media.comments": self.media_comments,
+            "media.like": self.media_like,
+            "media.unlike": self.media_unlike,
+            "media.save": self.media_save,
+            "media.unsave": self.media_unsave,
             "user.profile": self.user_profile,
             "user.medias": self.user_medias,
             "activity.inbox": self.activity_inbox,
             "direct.threads": self.direct_threads,
             "direct.thread": self.direct_thread,
             "direct.send": self.direct_send,
+            "direct.mark_read": self.direct_mark_read,
+            "direct.react": self.direct_react,
             "direct.notes": self.direct_notes,
             "direct.presence": self.direct_presence,
         }

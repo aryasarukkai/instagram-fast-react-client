@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from instagrapi.exceptions import ChallengeRequired, ClientError, PleaseWaitFewMinutes, TwoFactorRequired
 from speedgram_protocol import ProtocolEngine, ProtocolError, normalize_timeline
-from speedgram_protocol.engine import _DEVICE_POOL
+from speedgram_protocol.engine import (
+    _DEVICE_POOL,
+    _normalize_slide_message,
+    _normalize_slide_thread,
+    normalize_direct_message,
+)
 
 
 class FakeClient:
@@ -198,6 +204,8 @@ def test_timeline_is_normalized_and_paginated() -> None:
                     "caption": {"text": "hello"},
                     "taken_at": 1_700_000_000,
                     "like_count": 12,
+                    "top_likers": ["mutual_friend"],
+                    "facepile_top_likers": [{"id": "8", "profile_pic_url": "https://cdn.example/mutual.jpg"}],
                     "comment_count": 3,
                     "image_versions2": {"candidates": [{"url": "https://cdn.example/image.jpg"}]},
                 }
@@ -224,14 +232,133 @@ def test_timeline_is_normalized_and_paginated() -> None:
             "takenAt": 1_700_000_000,
             "location": "",
             "likeCount": 12,
+            "likedBy": [{
+                "id": "8",
+                "username": "mutual_friend",
+                "profilePictureUrl": "https://cdn.example/mutual.jpg",
+            }],
             "commentCount": 3,
             "liked": False,
             "saved": False,
+            "trackingToken": None,
+            "loggingInfoToken": None,
             "imageUrl": "https://cdn.example/image.jpg",
             "videoUrl": None,
             "children": [],
         }
     ]
+
+
+def test_gif_messages_normalize_from_web_and_mobile_shapes() -> None:
+    web = _normalize_slide_message(
+        {
+            "id": "gif-web",
+            "message_id": "mid.$gif-web",
+            "sender_fbid": "5",
+            "content_type": "INSTAGRAM_MESSAGING_ANIMATED_IMAGE",
+            "content": {
+                "animated_media": {
+                    "alt_text": "celebration",
+                    "preview_cdn_url": "https://cdn.example/gif.webp",
+                    "attachment_mp4_url": "https://cdn.example/gif.mp4",
+                }
+            },
+        },
+        "42",
+    )
+    assert web["share"]["shareType"] == "gif"
+    assert web["share"]["videoUrl"] == "https://cdn.example/gif.mp4"
+
+    mobile = normalize_direct_message(
+        SimpleNamespace(
+            id="gif-mobile",
+            item_type="animated_media",
+            user_id="5",
+            is_sent_by_viewer=False,
+            text=None,
+            timestamp=0,
+            animated_media={
+                "images": {"fixed_height": {"url": "https://cdn.example/gif.gif"}}
+            },
+            reply=None,
+            reactions=None,
+        )
+    )
+    assert mobile["share"]["shareType"] == "gif"
+    assert mobile["share"]["imageUrl"] == "https://cdn.example/gif.gif"
+
+
+def test_slide_reply_preserves_rich_media_context_and_client_context() -> None:
+    item = _normalize_slide_message(
+        {
+            "id": "reply-1",
+            "message_id": "mid.$reply-1",
+            "offline_threading_id": "offline-1",
+            "sender_fbid": "42",
+            "content_type": "TEXT",
+            "content": {"text_body": "perfect"},
+            "replied_to_message": {
+                "id": "reel-1",
+                "message_id": "mid.$reel-1",
+                "content_type": "IG_REEL_SHARE_XMA",
+                "content": {
+                    "xma": {
+                        "target_id": "media-1",
+                        "target_url": "https://www.instagram.com/reel/code/",
+                        "header_title_text": "creator",
+                    }
+                },
+            },
+        },
+        "42",
+    )
+
+    assert item["clientContext"] == "offline-1"
+    assert item["reply"] == "Reel from @creator"
+
+
+def test_slide_thread_exposes_group_image_and_reaction_activity_preview() -> None:
+    thread = _normalize_slide_thread(
+        {
+            "thread_id": "group-1",
+            "thread_title": "Design crew",
+            "thread_image_url": "https://cdn.example/group.jpg",
+            "viewer_id": "viewer",
+            "is_group": True,
+            "marked_as_unread": True,
+            "last_activity_timestamp_ms": "1700000001000",
+            "users": [{"id": "member", "username": "member"}],
+            "slide_messages": {
+                "edges": [
+                    {
+                        "node": {
+                            "id": "reaction-1",
+                            "message_id": "mid.$reaction-1",
+                            "sender_fbid": "member",
+                            "content_type": "REACTION_LOG_XMAT",
+                            "content": {"is_reaction_action_log": True},
+                            "timestamp_ms": "1700000001000",
+                        }
+                    },
+                    {
+                        "node": {
+                            "id": "message-1",
+                            "message_id": "mid.$message-1",
+                            "sender_fbid": "viewer",
+                            "content_type": "TEXT",
+                            "content": {"text_body": "hello"},
+                            "timestamp_ms": "1700000000000",
+                        }
+                    },
+                ]
+            },
+        }
+    )
+
+    assert thread["threadImageUrl"] == "https://cdn.example/group.jpg"
+    assert thread["lastPreview"] == "Liked a message"
+    assert thread["lastReadMessageId"] == "mid.$reaction-1"
+    assert [item["text"] for item in thread["messages"]] == ["hello"]
 
 
 def test_rate_limit_is_a_safe_protocol_error() -> None:
@@ -366,60 +493,118 @@ def test_web_comments_normalizes(monkeypatch) -> None:
     assert "/api/v1/media/42/comments/" in fake.calls[0]["url"]
 
 
-def test_web_threads_normalizes_inbox(monkeypatch) -> None:
+class DirectHydrationFakeRequests:
+    """Serves page tokens plus captured-shape Polaris inbox/thread GraphQL data."""
+
+    RequestException = Exception
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    @staticmethod
+    def message(message_id: str, sender: str, text: str, timestamp_ms: str) -> dict[str, Any]:
+        return {
+            "id": message_id,
+            "message_id": f"mid.${message_id}",
+            "sender_fbid": sender,
+            "content_type": "TEXT",
+            "content": {"text_body": text},
+            "timestamp_ms": timestamp_ms,
+            "msg_reactions": [],
+        }
+
+    def thread(self) -> dict[str, Any]:
+        return {
+            "thread_id": "340282",
+            "thread_key": "fb-thread-key",
+            "thread_fbid": "fb-thread-key",
+            "thread_title": "aeri",
+            "viewer_id": "viewer-igid",
+            "viewer": {
+                "id": "viewer-igid",
+                "interop_messaging_user_fbid": "viewer-fbid",
+            },
+            "users": [{
+                "id": "user-igid",
+                "interop_messaging_user_fbid": "5",
+                "username": "aeri",
+                "profile_pic_url": "https://cdn.example/aeri.jpg",
+            }],
+            "last_activity_timestamp_ms": "1700000001000",
+            "marked_as_unread": True,
+            "is_muted": False,
+            "is_group": False,
+            "slide_messages": {
+                "edges": [
+                    {"node": self.message("2", "viewer-fbid", "second", "1700000001000")},
+                    {"node": self.message("1", "5", "first", "1700000000000")},
+                ]
+            },
+        }
+
+    def request(self, method: str, url: str, **kwargs: Any) -> Any:
+        self.calls.append({"method": method, "url": url, **kwargs})
+        if method == "GET":
+            html = '["DTSGInitialData",[],{"token":"DTSG_TOKEN"}] ["LSD",[],{"token":"LSD_TOKEN"}]'
+            return type("R", (), {"status_code": 200, "text": html, "json": lambda self: {}})()
+        operation = kwargs["data"]["fb_api_req_friendly_name"]
+        if operation == "PolarisDirectInboxQuery":
+            payload = {
+                "data": {
+                    "get_slide_mailbox_for_iris_subscription": {
+                        "threads_by_folder": {
+                            "edges": [{"node": {"as_ig_direct_thread": self.thread()}}]
+                        }
+                    }
+                }
+            }
+        else:
+            payload = {
+                "data": {
+                    "get_slide_thread_nullable": {"as_ig_direct_thread": self.thread()}
+                }
+            }
+        return FakeResponse(200, payload)
+
+
+def test_web_threads_uses_polaris_inbox_and_normalizes(monkeypatch) -> None:
     from speedgram_protocol import engine as engine_module
 
-    payload = {
-        "inbox": {
-            "threads": [
-                {
-                    "thread_id": "340282",
-                    "thread_title": "aeri",
-                    "users": [{"pk": "5", "username": "aeri"}],
-                    "last_activity_at": 1_700_000_000_000_000,
-                    "items": [
-                        {"item_id": "1", "user_id": "5", "item_type": "text", "text": "hi", "timestamp": 1_700_000_000_000_000},
-                        {"item_id": "2", "user_id": "42", "item_type": "text", "text": "hey", "timestamp": 1_700_000_001_000_000},
-                    ],
-                }
-            ]
-        }
-    }
-    fake = FakeRequests(FakeResponse(200, payload))
+    fake = DirectHydrationFakeRequests()
     monkeypatch.setattr(engine_module, "requests", fake)
-
     engine = ProtocolEngine(client_factory=ClientFactory())
     result = engine.dispatch("web.threads", {"cookies": {"sessionid": "s", "ds_user_id": "42"}})
+
     thread = result["items"][0]
     assert thread["id"] == "340282"
     assert thread["title"] == "aeri"
-    assert thread["lastActivityAt"] == 1_700_000_000  # microseconds reduced to seconds
-    # API items are newest-first; the normalizer reverses them for top-to-bottom display.
-    assert thread["messages"][0]["text"] == "hey"
-    assert thread["messages"][0]["mine"] is True  # viewer 42's own message
-    assert thread["messages"][1]["text"] == "hi"
-    assert thread["messages"][1]["mine"] is False
-    assert "/api/v1/direct_v2/inbox/" in fake.calls[0]["url"]
+    assert thread["lastActivityAt"] == 1_700_000_001
+    assert thread["unread"] is True
+    assert thread["users"][0]["id"] == "5"
+    assert thread["users"][0]["profilePictureUrl"] == "https://cdn.example/aeri.jpg"
+    assert [message["text"] for message in thread["messages"]] == ["first", "second"]
+    assert thread["messages"][1]["mine"] is True
+    post = next(call for call in fake.calls if call["method"] == "POST")
+    assert post["data"]["fb_api_req_friendly_name"] == "PolarisDirectInboxQuery"
+    assert post["data"]["doc_id"] == "27262915580045003"
 
 
-def test_web_thread_returns_items_chronologically(monkeypatch) -> None:
+def test_web_thread_uses_captured_thread_key_and_cached_page_tokens(monkeypatch) -> None:
     from speedgram_protocol import engine as engine_module
 
-    payload = {
-        "thread": {
-            "thread_id": "340282",
-            "items": [
-                {"item_id": "2", "user_id": "42", "item_type": "text", "text": "second"},
-                {"item_id": "1", "user_id": "5", "item_type": "text", "text": "first"},
-            ],
-        }
-    }
-    monkeypatch.setattr(engine_module, "requests", FakeRequests(FakeResponse(200, payload)))
+    fake = DirectHydrationFakeRequests()
+    monkeypatch.setattr(engine_module, "requests", fake)
     engine = ProtocolEngine(client_factory=ClientFactory())
-    result = engine.dispatch("web.thread", {"cookies": {"sessionid": "s", "ds_user_id": "42"}, "threadId": "340282"})
-    # newest-first API order reversed → oldest ("first") at top
-    assert [m["text"] for m in result["items"]] == ["first", "second"]
-    assert result["items"][1]["mine"] is True
+    cookies = {"sessionid": "s", "ds_user_id": "42"}
+    engine.dispatch("web.threads", {"cookies": cookies})
+    result = engine.dispatch("web.thread", {"cookies": cookies, "threadId": "340282"})
+
+    assert [message["text"] for message in result["items"]] == ["first", "second"]
+    posts = [call for call in fake.calls if call["method"] == "POST"]
+    assert posts[-1]["data"]["fb_api_req_friendly_name"] == "IGDThreadDetailQuery"
+    assert posts[-1]["data"]["doc_id"] == "28395443243391552"
+    assert '"thread_fbid":"fb-thread-key"' in posts[-1]["data"]["variables"]
+    assert len([call for call in fake.calls if call["method"] == "GET"]) == 1
 
 
 class SendFakeRequests:
@@ -449,6 +634,7 @@ def test_web_send_uses_graphql_with_page_tokens(monkeypatch) -> None:
     )
     assert result["message"]["text"] == "hello"
     assert result["message"]["mine"] is True
+    assert result["message"]["clientContext"]
     # First a GET to scrape tokens, then the GraphQL POST.
     assert fake.calls[0]["method"] == "GET"
     post = fake.calls[1]
@@ -457,8 +643,186 @@ def test_web_send_uses_graphql_with_page_tokens(monkeypatch) -> None:
     assert body["fb_dtsg"] == "DTSG_TOKEN"
     assert body["lsd"] == "LSD_TOKEN"
     assert body["fb_api_req_friendly_name"] == "IGDirectTextSendMutation"
+    assert body["doc_id"] == "26911679871773184"
     assert '"ig_thread_igid":"34"' in body["variables"]
     assert '"sensitive_string_value":"hello"' in body["variables"]
+
+
+class InteractionFakeRequests:
+    """Serves token HTML, user info (fbid), and GraphQL ok responses."""
+
+    RequestException = Exception
+
+    def __init__(self, graphql_payload: dict[str, Any] | None = None) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.graphql_payload = graphql_payload or {"data": {"ok": True}}
+
+    def request(self, method: str, url: str, **kwargs: Any) -> Any:
+        self.calls.append({"method": method, "url": url, **kwargs})
+        if method == "GET" and url.rstrip("/").endswith("instagram.com"):
+            html = '["DTSGInitialData",[],{"token":"DTSG_TOKEN"}] ["LSD",[],{"token":"LSD_TOKEN"}]'
+            return type("R", (), {"status_code": 200, "text": html, "json": lambda self: {}})()
+        if method == "GET" and "/api/v1/users/" in url and url.endswith("/info/"):
+            return FakeResponse(200, {"user": {"pk": "42", "fbid_v2": "17841450859296213", "username": "me"}})
+        return FakeResponse(200, self.graphql_payload)
+
+    def graphql_posts(self) -> list[dict[str, Any]]:
+        return [c for c in self.calls if c["method"] == "POST" and c["url"].endswith("/api/graphql")]
+
+
+def test_web_like_and_unlike_use_har_contracts(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    fake = InteractionFakeRequests({"data": {"xig_media_like": {"media": {"has_liked": True}}}})
+    monkeypatch.setattr(engine_module, "requests", fake)
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    cookies = {"sessionid": "s", "ds_user_id": "42"}
+
+    liked = engine.dispatch(
+        "web.like",
+        {"cookies": cookies, "mediaId": "3946249909356489892_54065316", "trackingToken": "tok"},
+    )
+    assert liked == {"liked": True, "mediaId": "3946249909356489892"}
+    like_body = fake.graphql_posts()[0]["data"]
+    assert like_body["fb_api_req_friendly_name"] == "usePolarisLikeMediaXIGLikeMutation"
+    assert like_body["doc_id"] == "27182485238052618"
+    assert like_body["av"] == "17841450859296213"
+    assert '"media_id":"3946249909356489892"' in like_body["variables"]
+    assert '"actor_id":"17841450859296213"' in like_body["variables"]
+
+    fake.calls.clear()
+    unliked = engine.dispatch("web.unlike", {"cookies": cookies, "mediaId": "3946249909356489892"})
+    assert unliked["liked"] is False
+    unlike_body = fake.graphql_posts()[0]["data"]
+    assert unlike_body["fb_api_req_friendly_name"] == "usePolarisLikeMediaXIGUnlikeMutation"
+    assert unlike_body["doc_id"] == "27345296031770102"
+
+
+def test_web_save_and_unsave_use_har_contracts(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    fake = InteractionFakeRequests()
+    monkeypatch.setattr(engine_module, "requests", fake)
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    cookies = {"sessionid": "s", "ds_user_id": "42"}
+
+    saved = engine.dispatch(
+        "web.save",
+        {"cookies": cookies, "mediaId": "99", "loggingInfoToken": "logtok"},
+    )
+    assert saved["saved"] is True
+    save_body = fake.graphql_posts()[0]["data"]
+    assert save_body["fb_api_req_friendly_name"] == "usePolarisSaveMediaSaveMutation"
+    assert save_body["doc_id"] == "27365486596441074"
+    assert '"logging_info_token":"logtok"' in save_body["variables"]
+
+    fake.calls.clear()
+    unsaved = engine.dispatch("web.unsave", {"cookies": cookies, "mediaId": "99"})
+    assert unsaved["saved"] is False
+    assert fake.graphql_posts()[0]["data"]["doc_id"] == "27371251859134880"
+
+
+def test_web_mark_read_react_share_forward_translate(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    fake = InteractionFakeRequests(
+        {
+            "data": {
+                "igd_detect_and_translate_text_content_query": [
+                    {"translated_text": "hola", "error_code": None}
+                ]
+            }
+        }
+    )
+    monkeypatch.setattr(engine_module, "requests", fake)
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    cookies = {"sessionid": "s", "ds_user_id": "42"}
+
+    assert engine.dispatch(
+        "web.mark_read",
+        {"cookies": cookies, "threadId": "340282", "messageId": "mid.$abc"},
+    )["ok"] is True
+    assert fake.graphql_posts()[0]["data"]["doc_id"] == "27356881703909995"
+
+    fake.calls.clear()
+    assert engine.dispatch(
+        "web.react",
+        {"cookies": cookies, "threadId": "17850", "messageId": "mid.$abc", "emoji": "😂"},
+    )["emoji"] == "😂"
+    react_body = fake.graphql_posts()[0]["data"]
+    assert react_body["doc_id"] == "24374451552236906"
+    assert '"reaction_status":"created"' in react_body["variables"]
+
+    fake.calls.clear()
+    shared = engine.dispatch(
+        "web.share_media", {"cookies": cookies, "mediaId": "99_1", "userId": "59241102400"}
+    )
+    assert shared["ok"] is True
+    share_body = fake.graphql_posts()[0]["data"]
+    assert share_body["doc_id"] == "27442850591982122"
+    assert '"media_id":"99"' in share_body["variables"]
+    assert r'"recipient_users":"[\"59241102400\"]"' in share_body["variables"] or (
+        '"59241102400"' in share_body["variables"]
+    )
+
+    fake.calls.clear()
+    forwarded = engine.dispatch(
+        "web.forward",
+        {
+            "cookies": cookies,
+            "toThreadId": "dest",
+            "fromThreadId": "src",
+            "text": "forwarded note",
+        },
+    )
+    assert forwarded["message"]["text"] == "forwarded note"
+    fwd_vars = fake.graphql_posts()[0]["data"]["variables"]
+    assert '"forwarded_from_thread_id":"src"' in fwd_vars
+    assert '"ig_thread_igid":"dest"' in fwd_vars
+
+    fake.calls.clear()
+    translated = engine.dispatch(
+        "web.translate",
+        {"cookies": cookies, "messageId": "mid.$abc", "text": "hello"},
+    )
+    assert translated["translatedText"] == "hola"
+
+
+def test_web_translate_unavailable_is_safe(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    fake = InteractionFakeRequests(
+        {"data": {"igd_detect_and_translate_text_content_query": [{"error_code": 9, "translated_text": None}]}}
+    )
+    monkeypatch.setattr(engine_module, "requests", fake)
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    with pytest.raises(ProtocolError) as error:
+        engine.dispatch(
+            "web.translate",
+            {"cookies": {"sessionid": "s", "ds_user_id": "42"}, "messageId": "mid.$a", "text": "x"},
+        )
+    assert error.value.code == "translate_unavailable"
+
+
+def test_timeline_preserves_engagement_tokens() -> None:
+    page = normalize_timeline(
+        {
+            "feed_items": [
+                {
+                    "media_or_ad": {
+                        "id": "9_1",
+                        "media_type": 1,
+                        "user": {"username": "maya"},
+                        "organic_tracking_token": "track",
+                        "logging_info_token": "log",
+                        "image_versions2": {"candidates": [{"url": "https://cdn/x.jpg"}]},
+                    }
+                }
+            ]
+        }
+    )
+    assert page["items"][0]["trackingToken"] == "track"
+    assert page["items"][0]["loggingInfoToken"] == "log"
 
 
 def test_web_profile_and_medias_normalize(monkeypatch) -> None:
@@ -625,6 +989,55 @@ def test_direct_threads_and_send_are_normalized() -> None:
     with pytest.raises(ProtocolError) as error:
         engine.dispatch("direct.send", {"threadId": "t1", "text": "  "})
     assert error.value.code == "invalid_request"
+
+
+def test_direct_rich_media_reactions_and_double_tap_are_normalized() -> None:
+    engine, client = _authenticated_engine()
+    reacted: list[tuple[str, str, str]] = []
+    seen: list[tuple[str, str]] = []
+    shared_video = Box(
+        id="media-1",
+        media_type=2,
+        user=Box(pk="7", username="maya", full_name="Maya", profile_pic_url=None, is_verified=False),
+        thumbnail_url="https://cdn.example/thumb.jpg",
+        video_url="https://cdn.example/video.mp4",
+        audio_url=None,
+    )
+    rich_message = Box(
+        id="item-1",
+        client_context="mid.item-1",
+        user_id="7",
+        is_sent_by_viewer=False,
+        item_type="media",
+        text=None,
+        timestamp=None,
+        reply=None,
+        media=shared_video,
+        reactions=Box(likes=[{}], likes_count=1, emojis=[Box(emoji="🔥")]),
+    )
+    client.direct_messages = lambda thread_id, amount: [rich_message]
+    client.direct_send_reaction = lambda thread_id, message_id, emoji: reacted.append(
+        (thread_id, message_id, emoji)
+    ) or True
+    client.direct_message_seen = lambda thread_id, message_id: seen.append((thread_id, message_id)) or True
+
+    result = engine.dispatch("direct.thread", {"threadId": "t1"})
+    item = result["items"][0]
+    assert item["messageId"] == "item-1"
+    assert item["clientContext"] == "mid.item-1"
+    assert item["share"]["kind"] == "video"
+    assert item["share"]["videoUrl"] == "https://cdn.example/video.mp4"
+    assert item["reactions"] == ["❤️", "🔥"]
+
+    reacted_result = engine.dispatch(
+        "direct.react", {"threadId": "t1", "messageId": "item-1", "emoji": "❤️"}
+    )
+    assert reacted_result == {"ok": True, "emoji": "❤️", "messageId": "item-1"}
+    assert reacted == [("t1", "item-1", "❤️")]
+    assert engine.dispatch(
+        "direct.mark_read", {"threadId": "t1", "messageId": "item-1"}
+    ) == {"ok": True}
+    assert seen == [("t1", "item-1")]
 
 
 def test_data_failures_map_to_safe_codes() -> None:

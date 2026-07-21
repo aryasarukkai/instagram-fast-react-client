@@ -147,6 +147,42 @@ export const nativeClient = {
     return native('direct_send', { threadId, text, replyToMessageId });
   },
 
+  like(mediaId, trackingToken = null) {
+    return native('media_like', { mediaId, trackingToken });
+  },
+
+  unlike(mediaId, trackingToken = null) {
+    return native('media_unlike', { mediaId, trackingToken });
+  },
+
+  save(mediaId, loggingInfoToken = null) {
+    return native('media_save', { mediaId, loggingInfoToken });
+  },
+
+  unsave(mediaId) {
+    return native('media_unsave', { mediaId });
+  },
+
+  markRead(threadId, messageId) {
+    return native('direct_mark_read', { threadId, messageId });
+  },
+
+  react(threadId, messageId, emoji) {
+    return native('direct_react', { threadId, messageId, emoji });
+  },
+
+  shareMedia(mediaId, userId) {
+    return native('direct_share_media', { mediaId, userId });
+  },
+
+  forwardMessage(fromThreadId, toThreadId, text) {
+    return native('direct_forward', { fromThreadId, toThreadId, text });
+  },
+
+  translateMessage(messageId, text, dialect = null) {
+    return native('direct_translate', { messageId, text, dialect });
+  },
+
   notes() {
     return native('direct_notes');
   },

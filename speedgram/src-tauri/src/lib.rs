@@ -125,6 +125,52 @@ struct SendInput {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaEngageInput {
+    media_id: String,
+    tracking_token: Option<String>,
+    logging_info_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarkReadInput {
+    thread_id: String,
+    message_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReactInput {
+    thread_id: String,
+    message_id: String,
+    emoji: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareMediaInput {
+    media_id: String,
+    user_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardInput {
+    from_thread_id: String,
+    to_thread_id: String,
+    text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranslateInput {
+    message_id: String,
+    text: String,
+    dialect: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct TelemetryInput {
     enabled: bool,
 }
@@ -454,7 +500,11 @@ async fn feed_timeline(
     if let Some(cookies) = web_session_cookies(&state)? {
         return state
             .sidecar
-            .call("web.timeline", json!({ "cookies": cookies, "cursor": input.cursor }), false)
+            .call(
+                "web.timeline",
+                json!({ "cookies": cookies, "cursor": input.cursor }),
+                false,
+            )
             .await
             .map_err(CommandError::from);
     }
@@ -504,7 +554,12 @@ async fn media_comments(
             .await
             .map_err(CommandError::from);
     }
-    call_with_restore(&state, "media.comments", json!({ "mediaId": input.media_id })).await
+    call_with_restore(
+        &state,
+        "media.comments",
+        json!({ "mediaId": input.media_id }),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -515,11 +570,20 @@ async fn user_profile(
     if let Some(cookies) = web_session_cookies(&state)? {
         return state
             .sidecar
-            .call("web.profile", json!({ "cookies": cookies, "username": input.username }), false)
+            .call(
+                "web.profile",
+                json!({ "cookies": cookies, "username": input.username }),
+                false,
+            )
             .await
             .map_err(CommandError::from);
     }
-    call_with_restore(&state, "user.profile", json!({ "username": input.username })).await
+    call_with_restore(
+        &state,
+        "user.profile",
+        json!({ "username": input.username }),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -579,7 +643,12 @@ async fn direct_thread(
             .await
             .map_err(CommandError::from);
     }
-    call_with_restore(&state, "direct.thread", json!({ "threadId": input.thread_id })).await
+    call_with_restore(
+        &state,
+        "direct.thread",
+        json!({ "threadId": input.thread_id }),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -623,6 +692,230 @@ async fn direct_presence(state: State<'_, AppState>) -> Result<Value, CommandErr
         return Ok(json!({ "users": {} }));
     }
     call_with_restore(&state, "direct.presence", json!({})).await
+}
+
+fn web_session_required() -> CommandError {
+    CommandError::new(
+        "web_session_required",
+        "This action needs an Instagram web session.",
+    )
+}
+
+#[tauri::command]
+async fn media_like(
+    input: MediaEngageInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.like",
+                json!({
+                    "cookies": cookies,
+                    "mediaId": input.media_id,
+                    "trackingToken": input.tracking_token,
+                }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(&state, "media.like", json!({ "mediaId": input.media_id })).await
+}
+
+#[tauri::command]
+async fn media_unlike(
+    input: MediaEngageInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.unlike",
+                json!({
+                    "cookies": cookies,
+                    "mediaId": input.media_id,
+                    "trackingToken": input.tracking_token,
+                }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(&state, "media.unlike", json!({ "mediaId": input.media_id })).await
+}
+
+#[tauri::command]
+async fn media_save(
+    input: MediaEngageInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.save",
+                json!({
+                    "cookies": cookies,
+                    "mediaId": input.media_id,
+                    "loggingInfoToken": input.logging_info_token,
+                }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(&state, "media.save", json!({ "mediaId": input.media_id })).await
+}
+
+#[tauri::command]
+async fn media_unsave(
+    input: MediaEngageInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.unsave",
+                json!({
+                    "cookies": cookies,
+                    "mediaId": input.media_id,
+                }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(&state, "media.unsave", json!({ "mediaId": input.media_id })).await
+}
+
+#[tauri::command]
+async fn direct_mark_read(
+    input: MarkReadInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.mark_read",
+                json!({
+                    "cookies": cookies,
+                    "threadId": input.thread_id,
+                    "messageId": input.message_id,
+                }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(
+        &state,
+        "direct.mark_read",
+        json!({ "threadId": input.thread_id, "messageId": input.message_id }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn direct_react(
+    input: ReactInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.react",
+                json!({
+                    "cookies": cookies,
+                    "threadId": input.thread_id,
+                    "messageId": input.message_id,
+                    "emoji": input.emoji,
+                }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(
+        &state,
+        "direct.react",
+        json!({
+            "threadId": input.thread_id,
+            "messageId": input.message_id,
+            "emoji": input.emoji,
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn direct_share_media(
+    input: ShareMediaInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    let cookies = web_session_cookies(&state)?.ok_or_else(web_session_required)?;
+    state
+        .sidecar
+        .call(
+            "web.share_media",
+            json!({
+                "cookies": cookies,
+                "mediaId": input.media_id,
+                "userId": input.user_id,
+            }),
+            false,
+        )
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+async fn direct_forward(
+    input: ForwardInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    let cookies = web_session_cookies(&state)?.ok_or_else(web_session_required)?;
+    state
+        .sidecar
+        .call(
+            "web.forward",
+            json!({
+                "cookies": cookies,
+                "fromThreadId": input.from_thread_id,
+                "toThreadId": input.to_thread_id,
+                "text": input.text,
+            }),
+            false,
+        )
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+async fn direct_translate(
+    input: TranslateInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    let cookies = web_session_cookies(&state)?.ok_or_else(web_session_required)?;
+    state
+        .sidecar
+        .call(
+            "web.translate",
+            json!({
+                "cookies": cookies,
+                "messageId": input.message_id,
+                "text": input.text,
+                "dialect": input.dialect,
+            }),
+            false,
+        )
+        .await
+        .map_err(CommandError::from)
 }
 
 #[tauri::command]
@@ -702,7 +995,10 @@ fn clear_web_session(state: State<'_, AppState>) -> Result<Value, CommandError> 
 /// credentials, and hand off to a background task that captures the browser-minted
 /// session cookies once the user completes login (including any 2FA/checkpoint).
 #[tauri::command]
-async fn begin_web_login(app: AppHandle, state: State<'_, AppState>) -> Result<Value, CommandError> {
+async fn begin_web_login(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
     let credentials = require_vault(&state)?
         .load_credentials()
         .map_err(|message| CommandError::new("credential_restore_failed", message))?;
@@ -712,19 +1008,23 @@ async fn begin_web_login(app: AppHandle, state: State<'_, AppState>) -> Result<V
         return Ok(json!({ "status": "web_login_in_progress" }));
     }
 
-    let url: Url = IG_LOGIN_URL
-        .parse()
-        .map_err(|_| CommandError::new("web_login_failed", "The Instagram login URL is invalid."))?;
-    let mut builder = WebviewWindowBuilder::new(&app, LOGIN_WEBVIEW_LABEL, WebviewUrl::External(url))
-        .title("Log into Instagram")
-        .inner_size(480.0, 720.0)
-        .center();
+    let url: Url = IG_LOGIN_URL.parse().map_err(|_| {
+        CommandError::new("web_login_failed", "The Instagram login URL is invalid.")
+    })?;
+    let mut builder =
+        WebviewWindowBuilder::new(&app, LOGIN_WEBVIEW_LABEL, WebviewUrl::External(url))
+            .title("Log into Instagram")
+            .inner_size(480.0, 720.0)
+            .center();
     if let Some(script) = autofill_script(credentials.as_ref()) {
         builder = builder.initialization_script(&script);
     }
-    let window = builder
-        .build()
-        .map_err(|error| CommandError::new("web_login_failed", format!("The Instagram login window could not open: {error}")))?;
+    let window = builder.build().map_err(|error| {
+        CommandError::new(
+            "web_login_failed",
+            format!("The Instagram login window could not open: {error}"),
+        )
+    })?;
 
     spawn_cookie_capture(app.clone(), window);
     Ok(json!({ "status": "web_login_started" }))
@@ -735,8 +1035,14 @@ async fn begin_web_login(app: AppHandle, state: State<'_, AppState>) -> Result<V
 /// which also lets Instagram's own UI handle 2FA and checkpoints naturally.
 fn autofill_script(credentials: Option<&Value>) -> Option<String> {
     let credentials = credentials?;
-    let username = credentials.get("username").and_then(Value::as_str).unwrap_or_default();
-    let password = credentials.get("password").and_then(Value::as_str).unwrap_or_default();
+    let username = credentials
+        .get("username")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let password = credentials
+        .get("password")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if username.is_empty() || password.is_empty() {
         return None;
     }
@@ -823,7 +1129,10 @@ fn spawn_cookie_capture(app: AppHandle, window: WebviewWindow) {
 fn build_web_session(cookies: &[Cookie<'static>]) -> Option<Value> {
     let mut jar = serde_json::Map::new();
     for cookie in cookies {
-        jar.insert(cookie.name().to_owned(), Value::String(cookie.value().to_owned()));
+        jar.insert(
+            cookie.name().to_owned(),
+            Value::String(cookie.value().to_owned()),
+        );
     }
     web_session_from_jar(jar)
 }
@@ -1018,6 +1327,15 @@ pub fn run() {
             direct_send,
             direct_notes,
             direct_presence,
+            media_like,
+            media_unlike,
+            media_save,
+            media_unsave,
+            direct_mark_read,
+            direct_react,
+            direct_share_media,
+            direct_forward,
+            direct_translate,
             save_web_credentials,
             begin_web_login,
             save_web_session_manual,
@@ -1069,7 +1387,10 @@ mod tests {
         ]"#;
         let session = parse_web_session(export).unwrap();
         assert_eq!(session["userId"], json!("50849711309"));
-        assert_eq!(session["cookies"]["sessionid"], json!("50849711309%3Aabc%3A0%3Adef"));
+        assert_eq!(
+            session["cookies"]["sessionid"],
+            json!("50849711309%3Aabc%3A0%3Adef")
+        );
         assert_eq!(session["cookies"]["csrftoken"], json!("tok"));
 
         // A JSON array with no sessionid is rejected like any other.

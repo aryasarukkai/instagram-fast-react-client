@@ -5,6 +5,7 @@ import { Avatar } from './Visual';
 import { nativeClient } from '../nativeClient';
 import { useResource } from '../useResource';
 import { relativeTime } from '../format';
+import ModalPortal from './ModalPortal';
 
 const CommentsSheet = ({ post, onClose }) => {
   useEffect(() => {
@@ -17,7 +18,7 @@ const CommentsSheet = ({ post, onClose }) => {
   const { data, error, loading } = useResource(loader);
   const comments = data?.items || [];
 
-  return (
+  return <ModalPortal>
     <div className="sheet-scrim" role="dialog" aria-label={`Comments on ${post.user.username}'s post`}>
       <button className="sheet-dismiss" type="button" aria-label="Close comments" onClick={onClose} />
       <section className="sheet">
@@ -53,7 +54,7 @@ const CommentsSheet = ({ post, onClose }) => {
         </form>
       </section>
     </div>
-  );
+  </ModalPortal>;
 };
 
 CommentsSheet.propTypes = { onClose: PropTypes.func.isRequired, post: PropTypes.object.isRequired };
