@@ -1,0 +1,31 @@
+[project]
+name = "speedgram-protocol"
+version = "0.1.0"
+description = "Local Instagram protocol engine for SpeedGram"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "instagrapi==2.18.8",
+]
+
+[project.optional-dependencies]
+# Android-TLS-impersonating transport for the mobile backend (see transport.py).
+impersonate = [
+  "curl_cffi>=0.7",
+]
+
+[project.scripts]
+speedgram-protocol = "speedgram_protocol.__main__:main"
+
+[dependency-groups]
+dev = [
+  "pyinstaller>=6.16,<7",
+  "pytest>=8.4,<9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

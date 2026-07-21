@@ -1,4 +1,5 @@
 // extensionDetector.js
+/* global chrome */
 function detectExtension(extensionId, callback) {
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage(extensionId, { message: 'isInstalled' }, response => {

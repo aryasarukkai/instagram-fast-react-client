@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChromePicker } from 'react-color';
@@ -204,7 +205,7 @@ const WelcomeSetupPage = ({ username }) => {
               transition={{ delay: 1, duration: 0.8 }}
               className={headerTextStyles}
             >
-              Let's get setup, {username}
+              Let&apos;s get setup, {username}
             </motion.h1>
           </motion.div>
         );
@@ -372,6 +373,10 @@ const WelcomeSetupPage = ({ username }) => {
       </motion.div>
     </AnimatePresence>
   );
+};
+
+WelcomeSetupPage.propTypes = {
+  username: PropTypes.string.isRequired,
 };
 
 export default WelcomeSetupPage;

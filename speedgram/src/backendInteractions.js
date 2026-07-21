@@ -18,6 +18,8 @@ const handleApiError = (error) => {
 
 // Function to handle user login and retrieve settings
 export const loginAndGetSettings = async (username, password) => {
+  void username;
+  void password;
   try {
     // Simulated login for development purposes
     // In a real scenario, you would make an API call to authenticate the user

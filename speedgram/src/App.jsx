@@ -1,42 +1,44 @@
-import React, { useState } from 'react';
-import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-dom';
-import { TransitionGroup, CSSTransition } from 'react-transition-group';
-import LandingPage from './components/LandingPage';
-import LoginPage from './components/LoginPage';
-import HomePage from './components/HomePage';
-import ReelsPage from './components/ReelsPage';
+import { Navigate, Route, Routes } from 'react-router-dom';
+import logo from './assets/speedgram-logo.png';
+import { AuthProvider, useAuth } from './auth/AuthContext';
+import ActivityPage from './components/ActivityPage';
 import Direct from './components/Direct';
-import WelcomeSetupPage from './components/WelcomeSetupPage';
-import SettingsPage from './components/SettingsPage';
-import { library } from '@fortawesome/fontawesome-svg-core';
-import { fas } from '@fortawesome/free-solid-svg-icons';
+import ExplorePage from './components/ExplorePage';
+import HomePage from './components/HomePage';
+import LoginPage from './components/LoginPage';
+import ProfilePage from './components/ProfilePage';
+import ReelsPage from './components/ReelsPage';
 
-library.add(fas);
+const BootstrapScreen = () => (
+  <main className="bootstrap-screen">
+    <img className="bootstrap-mark" src={logo} alt="SpeedGram" width="88" height="88" />
+    <div className="bootstrap-line"><span /></div>
+  </main>
+);
 
-const App = () => {
-  const [username, setUsername] = useState('');
+const RoutedApp = () => {
+  const { authState } = useAuth();
+  if (authState.status === 'booting') return <BootstrapScreen />;
+
+  if (authState.status !== 'authenticated') return <LoginPage />;
 
   return (
-    <div className="bg-gray-900 text-white min-h-screen">
-      <Router>
-        <TransitionGroup>
-          <CSSTransition key={window.location.key} classNames="fade" timeout={300}>
-            <Routes>
-              <Route path="/welcome" element={
-                username ? <WelcomeSetupPage username={username} /> : <Navigate to="/login" replace />
-              } />
-              <Route path="/" element={<LandingPage />} />
-              <Route path="/login" element={<LoginPage setUsername={setUsername} />} />
-              <Route path="/home" element={<HomePage />} />
-              <Route path="/reels" element={<ReelsPage />} />
-              <Route path="/direct" element={<Direct />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Routes>
-          </CSSTransition>
-        </TransitionGroup>
-      </Router>
-    </div>
+    <Routes>
+      <Route path="/home" element={<HomePage />} />
+      <Route path="/explore" element={<ExplorePage />} />
+      <Route path="/reels" element={<ReelsPage />} />
+      <Route path="/direct" element={<Direct />} />
+      <Route path="/activity" element={<ActivityPage />} />
+      <Route path="/profile" element={<ProfilePage />} />
+      <Route path="*" element={<Navigate to="/home" replace />} />
+    </Routes>
   );
 };
+
+const App = () => (
+  <AuthProvider>
+    <RoutedApp />
+  </AuthProvider>
+);
 
 export default App;

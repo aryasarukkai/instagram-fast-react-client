@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { updateProfile, deserializeSession } from '../instagramService';
 import { Notyf } from 'notyf';
 import 'notyf/notyf.min.css';

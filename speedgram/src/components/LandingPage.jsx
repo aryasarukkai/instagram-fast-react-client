@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faInstagram } from '@fortawesome/free-brands-svg-icons';
@@ -21,7 +21,7 @@ const LandingPage = () => {
 
   const handleAlreadyInstalled = () => {
     Cookies.set('extensionAcknowledged', 'true', { expires: 365 }); // Cookie expires in 1 year
-    setShowExtensionPopup(false);s
+    setShowExtensionPopup(false);
   };
 
   const handleBetaAcknowledgment = () => {
@@ -81,7 +81,7 @@ const LandingPage = () => {
                 onClick={handleAlreadyInstalled}
                 className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded"
               >
-                I've Already Installed
+                I&apos;ve Already Installed
               </button>
               <button
                 onClick={handleInstall}

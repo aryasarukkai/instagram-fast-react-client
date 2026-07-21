@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import CryptoJS from 'crypto-js';
+/* global chrome */
 
 import { Buffer } from 'buffer/';
 
@@ -73,8 +74,6 @@ export const login = async (username, password) => {
     const uuid = generateUUID();
     const phoneId = generateUUID();
     const androidId = generateDeviceId();
-    const deviceId = generateUUID();
-
     const signedBody = JSON.stringify({
       jazoest: generateJazoest(phoneId),
       country_codes: JSON.stringify([{"country_code":"1","source":["default"]}]),

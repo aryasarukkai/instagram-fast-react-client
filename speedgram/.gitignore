@@ -9,8 +9,18 @@ lerna-debug.log*
 
 node_modules
 dist
+protocol/build/
+protocol/dist/
+protocol/.venv/
+src-tauri/binaries/speedgram-protocol-*
+src-tauri/target/
 dist-ssr
 *.local
+.venv
+__pycache__
+.pytest_cache
+protocol/.venv
+src-tauri/target
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +32,4 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+outputs/

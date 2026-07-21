@@ -1,0 +1,35 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "SpeedGram",
+  "version": "0.1.0",
+  "identifier": "dev.speedgram.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "SpeedGram",
+        "width": 1380,
+        "height": 900,
+        "minWidth": 820,
+        "minHeight": 640,
+        "center": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; font-src 'self'; img-src 'self' asset: http://asset.localhost data: blob: https://*.cdninstagram.com https://*.fbcdn.net; media-src 'self' blob: https://*.cdninstagram.com https://*.fbcdn.net; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "externalBin": ["binaries/speedgram-protocol"],
+    "icon": ["icons/icon.icns", "icons/icon.png"]
+  }
+}
