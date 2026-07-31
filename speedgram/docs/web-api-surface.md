@@ -1,8 +1,8 @@
 # Instagram web (Polaris) API surface
 
 Derived from real logged-in `www.instagram.com` session captures (HAR), including
-`interactions4.har`. This is the map for the **core/web backend** — the features
-SpeedGram serves from the browser-minted session.
+`interactions4.har` and `interactions8.har`. This is the map for the **core/web
+backend** — the features SpeedGram serves from the browser-minted session.
 
 ## Transport
 
@@ -31,6 +31,9 @@ SpeedGram serves from the browser-minted session.
 | Share sheet targets | `PolarisShareSheetV3NullStateQuery` | `36651079954537487` | `web.share_targets` |
 | Direct inbox hydration | `PolarisDirectInboxQuery` | `27262915580045003` | `web.threads` |
 | Direct thread hydration | `IGDThreadDetailQuery` | `28395443243391552` | `web.thread` |
+| Comment like | `PolarisCommentActionsLikeMutation` | `27184292767848867` | `web.comment_like` |
+| Follow | `usePolarisFollowMutation` | `26508036048874888` | `web.follow` |
+| Unfollow | `usePolarisUnfollowMutation` | `27789106940691111` | `web.unfollow` |
 
 ### ID rules from HAR
 
@@ -43,6 +46,25 @@ SpeedGram serves from the browser-minted session.
 - Save needs `logging_info_token` from the feed item when present.
 - DM react/reply/mark-read prefer GraphQL `mid.$…` message ids.
 - Media share to a 1:1 uses `recipient_users` as a JSON string of the peer IG pk.
+- Comment like uses `input.{comment_id,actor_id,client_mutation_id}` (FBID actor).
+- Follow/unfollow use `target_user_id` plus `container_module` / `nav_chain`.
+- Comment unlike had no GraphQL op in `interactions8.har`; web uses
+  `POST /api/v1/media/{comment_id}/comment_unlike/`.
+- Incoming follow requests use `notif_name=private_user_follow_request` plus
+  `inline_follow.user_info.friendship_status.incoming_request`; accept/delete map to
+  `friendships/approve` and `friendships/ignore`.
+- Comment threading is **two levels only** (`interactions8-commen.har`). Parents carry
+  `child_comment_count` and `preview_child_comments`; children are flat with
+  `parent_comment_id` + `replied_to_comment_id` (these diverge when replying to a
+  reply). `type: 0` is top-level, `type: 2` is a reply.
+- Replies have **no cursor field**. Paging is `min_id` plus
+  `has_more_head_child_comments` / `has_more_tail_child_comments`, so the next
+  `min_id` is the last reply id already held.
+- The comments response also carries `quick_response_emojis` — the emoji row the
+  mobile sheet renders above its composer.
+- Writing a comment (`POST /api/v1/web/comments/{media_id}/add/` with `comment_text`
+  and optional `replied_to_comment_id`) appears in the Polaris bundle but was never
+  fired in any capture. It stays **unwired** until a capture verifies it.
 
 ## Other GraphQL operations observed (not yet wired)
 
@@ -63,18 +85,25 @@ SpeedGram serves from the browser-minted session.
 
 - `POST /api/v1/feed/timeline/` — home feed
 - `GET /api/v1/feed/reels_tray/` — story tray
-- `GET /api/v1/media/{id}/comments/`
+- `GET /api/v1/media/{id}/comments/?can_support_threading=true&permalink_enabled=false`
+- `GET /api/v1/media/{id}/comments/{commentId}/child_comments/?min_id=&is_chronological=true&paging_direction=view_more`
+  — comment replies (`web.comment_replies`)
 - `GET /api/v1/users/web_profile_info/`, `GET /api/v1/users/{id}/info/`
+- `POST /api/v1/news/inbox/` — notifications (`web.activity`; body `fb_dtsg` + `jazoest`)
+- `POST /api/v1/media/{comment_id}/comment_unlike/` — comment unlike (`web.comment_unlike`)
+- `POST /api/v1/friendships/approve/{user_id}/` — accept follow request
+- `POST /api/v1/friendships/ignore/{user_id}/` — delete/ignore follow request
 
 Also observed (not wired): `GET /api/v1/discover/web/explore_grid/`,
-`GET /api/v1/media/{id}/info/`, mental-wellbeing telemetry (ignore).
+`GET /api/v1/media/{id}/info/`, `GET /api/v1/friendships/pending/`,
+mental-wellbeing telemetry (ignore).
 
 ## Implication
 
 DM inbox/thread hydration and interactions (send/reply/forward/react/read), feed
-engagement (like/save/share), comments read, profile, and stories tray are reachable
-on the web surface. Direct currently hydrates with the same Polaris GraphQL
-operations seen in the web client, then uses a silent adaptive refresh until the
-realtime socket transport is wired. Story playback/seen, comment writes, and rich
-creation remain later milestones. Explore/Reels/Activity still prefer the mobile
-sidecar when no web-equivalent path is wired.
+engagement (like/save/share), comment like, follow/unfollow, notifications inbox,
+comments read, profile, and stories tray are reachable on the web surface. Direct
+currently hydrates with the same Polaris GraphQL operations seen in the web client,
+then uses a silent adaptive refresh until the realtime socket transport is wired.
+Story playback/seen, comment writes, and rich creation remain later milestones.
+Explore/Reels still prefer the mobile sidecar when no web-equivalent path is wired.

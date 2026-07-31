@@ -30,6 +30,7 @@ const RoutedApp = () => {
       <Route path="/reels" element={<ReelsPage />} />
       <Route path="/direct" element={<Direct />} />
       <Route path="/activity" element={<ActivityPage />} />
+      <Route path="/profile/:username" element={<ProfilePage />} />
       <Route path="/profile" element={<ProfilePage />} />
       <Route path="*" element={<Navigate to="/home" replace />} />
     </Routes>

@@ -47,13 +47,23 @@ Real data surfaces currently include:
 - Explore grid
 - Profile and profile media
 - Activity inbox
-- Post comments
+- Post comments, with on-demand reply threads
 - Direct inbox, thread messages, Notes, and text sending
 
 Story playback, post opening from grids, search, creation, calls, comment writing,
 and most engagement actions remain disabled. Presence has a native/protocol command
-but is not consumed by React. Reels and profile pagination are returned by the
-engine but not yet driven by their pages.
+but is not consumed by React. Profile pagination is returned by the engine but not
+yet driven by its page.
+
+The Reels tab is a TikTok-style vertical, scroll-snapped, autoplaying feed. When a
+web session is present it is served by the Rust-owned web ClipsTab backend
+(`web.reels`, mirroring Polaris' `PolarisClipsTabDesktop*` queries) with cursor +
+`seenIds` pagination driven by the page; it falls back to the mobile `feed.reels`
+engine otherwise. Feed and reel videos share one autoplay/mute controller
+(`src/videoFeed.js` + `FeedVideo`): videos play only while they dominate the
+viewport, start muted, and stay unmuted app-wide once the user unmutes, until
+reload. The share sheet targets Direct **threads** (the web ranked share sheet
+exposes thread ids and member avatars, never recipient user ids).
 
 Chat themes are the only approved `localStorage` use. They are explicitly local UI
 preferences and never contain Instagram account material.
@@ -74,6 +84,7 @@ The renderer command surface is:
 - `feed_reels({ cursor?, source? })`
 - `feed_explore()`
 - `media_comments({ mediaId })`
+- `media_comment_replies({ mediaId, commentId, cursor? })`
 - `user_profile({ username? })`
 - `user_medias({ userId?, username?, cursor? })`
 - `activity_inbox()`
@@ -82,6 +93,7 @@ The renderer command surface is:
 - `direct_send({ threadId, text })`
 - `direct_notes()`
 - `direct_presence()`
+- `direct_share_targets()`
 - `save_web_credentials({ username, password })`
 - `begin_web_login()`
 - `web_session_status()`
@@ -231,7 +243,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 npm run tauri build -- --debug --bundles app
 ```
 
-The current verified baseline is 15 React tests, 37 Python tests, and 6 Rust tests,
+The current verified baseline is 17 React tests, 47 Python tests, and 6 Rust tests,
 plus clean lint, Vite build, dependency audit, and Clippy. Update counts when tests
 change; passing counts do not replace live acceptance.
 

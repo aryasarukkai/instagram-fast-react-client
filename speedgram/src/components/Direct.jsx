@@ -1011,7 +1011,7 @@ const Direct = () => {
           onShare={(post) => setSharePost(post)}
         />
       ) : null}
-      {sharePost ? <ShareSheet mediaId={sharePost.id} onClose={() => setSharePost(null)} /> : null}
+      {sharePost ? <ShareSheet mediaId={sharePost.id} post={sharePost} onClose={() => setSharePost(null)} /> : null}
     </AppShell>
   );
 };

@@ -1,5 +1,6 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Copy, Grid3x3, LoaderCircle, Lock, PlayCircle } from 'lucide-react';
+import { Link, useParams } from 'react-router-dom';
 import AppShell from './AppShell';
 import Visual, { Avatar } from './Visual';
 import { nativeClient } from '../nativeClient';
@@ -9,13 +10,59 @@ import { exactCount } from '../format';
 
 const ProfilePage = () => {
   const { authState } = useAuth();
-  const username = authState.user?.username;
+  const { username: routeUsername } = useParams();
+  const username = routeUsername || authState.user?.username;
+  const isSelf = Boolean(username && authState.user?.username && username === authState.user.username);
 
   const profileLoader = useCallback(() => nativeClient.profile(username), [username]);
   const mediaLoader = useCallback(() => nativeClient.userMedias({ username }), [username]);
   const profile = useResource(profileLoader);
   const medias = useResource(mediaLoader);
   const user = profile.data?.user;
+
+  const [following, setFollowing] = useState(null);
+  const [outgoing, setOutgoing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState(null);
+
+  useEffect(() => {
+    setFollowing(null);
+    setOutgoing(false);
+    setActionError(null);
+  }, [username]);
+
+  const resolvedFollowing = following ?? Boolean(user?.following);
+  const resolvedOutgoing = following == null ? Boolean(user?.outgoingRequest) : outgoing;
+
+  const toggleFollow = async () => {
+    if (!user?.id || busy || isSelf) return;
+    const wasFollowing = resolvedFollowing;
+    const wasOutgoing = resolvedOutgoing;
+    const nextFollowing = !wasFollowing && !wasOutgoing;
+    setFollowing(nextFollowing);
+    setOutgoing(false);
+    setBusy(true);
+    setActionError(null);
+    try {
+      if (wasFollowing || wasOutgoing) {
+        const result = await nativeClient.unfollow(user.id);
+        setFollowing(Boolean(result.following));
+        setOutgoing(Boolean(result.outgoingRequest));
+      } else {
+        const result = await nativeClient.follow(user.id);
+        setFollowing(Boolean(result.following));
+        setOutgoing(Boolean(result.outgoingRequest));
+      }
+    } catch (error) {
+      setFollowing(wasFollowing);
+      setOutgoing(wasOutgoing);
+      setActionError(error?.message || 'Follow action failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const followLabel = resolvedFollowing ? 'Following' : (resolvedOutgoing ? 'Requested' : 'Follow');
 
   return (
     <AppShell>
@@ -32,6 +79,19 @@ const ProfilePage = () => {
                 {user.isPrivate ? <Lock size={15} /> : null}
                 <h1>{user.username}</h1>
                 {user.verified ? <span className="verified" title="Verified">✓</span> : null}
+                {!isSelf ? (
+                  <button
+                    type="button"
+                    className={resolvedFollowing || resolvedOutgoing ? 'is-following' : ''}
+                    disabled={busy}
+                    onClick={toggleFollow}
+                  >
+                    {busy ? '…' : followLabel}
+                  </button>
+                ) : null}
+                {routeUsername && isSelf ? (
+                  <Link className="profile-self-link" to="/profile">Your profile</Link>
+                ) : null}
               </div>
               <div className="profile-stats">
                 <span><strong>{exactCount.format(user.mediaCount)}</strong> posts</span>
@@ -40,6 +100,7 @@ const ProfilePage = () => {
               </div>
               {user.fullName ? <p className="profile-name">{user.fullName}</p> : null}
               {user.biography ? <p className="profile-bio">{user.biography}</p> : null}
+              {actionError ? <p className="inline-error" role="status">{actionError}</p> : null}
             </div>
           </header>
         ) : null}

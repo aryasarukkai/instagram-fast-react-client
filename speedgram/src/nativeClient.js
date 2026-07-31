@@ -111,8 +111,8 @@ export const nativeClient = {
     return warmed('stories', () => native('feed_stories'));
   },
 
-  reels({ cursor = null, source = 'following' } = {}) {
-    return native('feed_reels', { cursor, source });
+  reels({ cursor = null, source = 'following', seenIds = [] } = {}) {
+    return native('feed_reels', { cursor, source, seenIds });
   },
 
   explore() {
@@ -121,6 +121,10 @@ export const nativeClient = {
 
   comments(mediaId) {
     return native('media_comments', { mediaId });
+  },
+
+  commentReplies(mediaId, commentId, cursor = null) {
+    return native('media_comment_replies', { mediaId, commentId, cursor });
   },
 
   profile(username = null) {
@@ -163,6 +167,30 @@ export const nativeClient = {
     return native('media_unsave', { mediaId });
   },
 
+  likeComment(commentId) {
+    return native('media_comment_like', { commentId });
+  },
+
+  unlikeComment(commentId) {
+    return native('media_comment_unlike', { commentId });
+  },
+
+  follow(userId) {
+    return native('user_follow', { userId });
+  },
+
+  unfollow(userId) {
+    return native('user_unfollow', { userId });
+  },
+
+  approveFollowRequest(userId) {
+    return native('user_follow_request_approve', { userId });
+  },
+
+  declineFollowRequest(userId) {
+    return native('user_follow_request_decline', { userId });
+  },
+
   markRead(threadId, messageId) {
     return native('direct_mark_read', { threadId, messageId });
   },
@@ -171,8 +199,12 @@ export const nativeClient = {
     return native('direct_react', { threadId, messageId, emoji });
   },
 
-  shareMedia(mediaId, userId) {
-    return native('direct_share_media', { mediaId, userId });
+  shareTargets() {
+    return native('direct_share_targets');
+  },
+
+  shareMedia(mediaId, { threadId = null, userId = null } = {}) {
+    return native('direct_share_media', { mediaId, threadId, userId });
   },
 
   forwardMessage(fromThreadId, toThreadId, text) {

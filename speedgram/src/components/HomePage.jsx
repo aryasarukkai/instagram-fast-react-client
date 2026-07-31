@@ -13,9 +13,11 @@ import {
   Send,
 } from 'lucide-react';
 import PropTypes from 'prop-types';
+import { Link } from 'react-router-dom';
 import AppShell from './AppShell';
 import PostViewer from './PostViewer';
 import ShareSheet from './ShareSheet';
+import FeedVideo from './FeedVideo';
 import Visual, { Avatar } from './Visual';
 import { feedCache, nativeClient } from '../nativeClient';
 import { useAuth } from '../auth/AuthContext';
@@ -44,10 +46,21 @@ const PostCard = ({ post, onOpenPost, onShare, onEngageError }) => {
   const [likeCount, setLikeCount] = useState(post.likeCount || 0);
   const [busy, setBusy] = useState(null);
   const [expanded, setExpanded] = useState(false);
+  const [following, setFollowing] = useState(null);
+  const [outgoing, setOutgoing] = useState(false);
+  const [followBusy, setFollowBusy] = useState(false);
   const caption = post.caption || '';
   const clipped = caption.length > 140 && !expanded;
   const media = post.imageUrl || post.children?.[0]?.imageUrl;
   const video = post.videoUrl || post.children?.[0]?.videoUrl;
+  const resolvedFollowing = following ?? Boolean(post.user?.following);
+  const resolvedOutgoing = following == null ? Boolean(post.user?.outgoingRequest) : outgoing;
+  // Only offer Follow when Instagram told us friendship status (home feed authors
+  // are usually already followed and often omit the flag entirely).
+  const showFollow = Boolean(post.user?.id)
+    && Boolean(post.user?.friendshipKnown)
+    && !resolvedFollowing
+    && !resolvedOutgoing;
 
   const toggleLike = async () => {
     if (busy) return;
@@ -83,35 +96,71 @@ const PostCard = ({ post, onOpenPost, onShare, onEngageError }) => {
     }
   };
 
+  const followAuthor = async () => {
+    if (!post.user?.id || followBusy) return;
+    setFollowing(true);
+    setOutgoing(false);
+    setFollowBusy(true);
+    try {
+      const result = await nativeClient.follow(post.user.id);
+      setFollowing(Boolean(result.following));
+      setOutgoing(Boolean(result.outgoingRequest));
+    } catch (error) {
+      setFollowing(false);
+      onEngageError?.(error?.message || 'Follow failed.');
+    } finally {
+      setFollowBusy(false);
+    }
+  };
+
   return (
     <article className="post">
       <header className="post-head">
-        <Avatar src={post.user.profilePictureUrl} username={post.user.username} size={38} ring="story" />
-        <div className="post-identity">
-          <p>
-            <strong>{post.user.username}</strong>
-            {post.user.verified ? <span className="verified" title="Verified">✓</span> : null}
-          </p>
-          {post.location || post.kind === 'video' ? (
-            <small>
-              {post.kind === 'video' && !post.location ? <><Music2 size={11} /> {post.user.username} · audio</> : post.location}
-            </small>
-          ) : null}
-        </div>
+        <Link to={`/profile/${post.user.username}`} className="post-author">
+          <Avatar src={post.user.profilePictureUrl} username={post.user.username} size={38} ring="story" />
+          <div className="post-identity">
+            <p>
+              <strong>{post.user.username}</strong>
+              {post.user.verified ? <span className="verified" title="Verified">✓</span> : null}
+            </p>
+            {post.location || post.kind === 'video' ? (
+              <small>
+                {post.kind === 'video' && !post.location ? <><Music2 size={11} /> {post.user.username} · audio</> : post.location}
+              </small>
+            ) : null}
+          </div>
+        </Link>
+        {showFollow ? (
+          <button
+            type="button"
+            className="post-follow"
+            disabled={followBusy}
+            onClick={followAuthor}
+          >
+            {followBusy ? '…' : 'Follow'}
+          </button>
+        ) : null}
         <button className="icon-button" type="button" aria-label="More options" disabled><MoreHorizontal size={20} /></button>
       </header>
 
       <div className="post-visual-wrap">
-        <Visual
-          className="post-visual"
-          imageUrl={media}
-          videoUrl={video}
-          controls
-          alt={`Post by ${post.user.username}`}
-          seed={post.id}
-        >
-          {post.kind === 'carousel' && post.children?.length ? <span className="carousel-count">1 / {post.children.length}</span> : null}
-        </Visual>
+        {video ? (
+          <FeedVideo
+            className="post-visual"
+            videoUrl={video}
+            poster={media}
+            alt={`Post by ${post.user.username}`}
+          />
+        ) : (
+          <Visual
+            className="post-visual"
+            imageUrl={media}
+            alt={`Post by ${post.user.username}`}
+            seed={post.id}
+          >
+            {post.kind === 'carousel' && post.children?.length ? <span className="carousel-count">1 / {post.children.length}</span> : null}
+          </Visual>
+        )}
         <button className="post-expand" type="button" onClick={() => onOpenPost(post)} aria-label="Open post">
           <Maximize2 size={17} /> <span>Open</span>
         </button>
@@ -298,7 +347,7 @@ const HomePage = () => {
           onShare={(post) => setSharePost(post)}
         />
       ) : null}
-      {sharePost ? <ShareSheet mediaId={sharePost.id} onClose={() => setSharePost(null)} /> : null}
+      {sharePost ? <ShareSheet mediaId={sharePost.id} post={sharePost} onClose={() => setSharePost(null)} /> : null}
     </AppShell>
   );
 };

@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Direct from './Direct';
 import { nativeClient } from '../nativeClient';
@@ -10,6 +11,8 @@ vi.mock('../auth/AuthContext', () => ({
 vi.mock('./AppShell', () => ({
   default: ({ children }) => <main>{children}</main>,
 }));
+
+const renderDirect = () => render(<MemoryRouter><Direct /></MemoryRouter>);
 
 const user = (id, username) => ({
   id,
@@ -78,7 +81,7 @@ describe('Direct conversations', () => {
       id === 'a' ? Promise.resolve({ items: [message('a1', 'alpha history')] }) : betaResult
     ));
 
-    render(<Direct />);
+    renderDirect();
     expect(await screen.findByText('alpha history')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Beta/ }));
@@ -108,7 +111,7 @@ describe('Direct conversations', () => {
     vi.spyOn(nativeClient, 'thread').mockResolvedValue({ items: [reel] });
     vi.spyOn(nativeClient, 'comments').mockResolvedValue({ items: [] });
 
-    render(<Direct />);
+    renderDirect();
     expect(await screen.findByText('A proper reel preview')).toBeInTheDocument();
     expect(screen.getByText('Reel')).toBeInTheDocument();
     expect(screen.getByText('@creator')).toBeInTheDocument();
@@ -141,7 +144,7 @@ describe('Direct conversations', () => {
     vi.spyOn(nativeClient, 'thread').mockResolvedValue({ items: [reel] });
     vi.spyOn(nativeClient, 'sendMessage').mockReturnValue(pending.promise);
 
-    render(<Direct />);
+    renderDirect();
     expect(await screen.findByText('Reply to this reel')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
     expect(screen.getByText('Reel from @creator')).toBeInTheDocument();
@@ -185,7 +188,7 @@ describe('Direct conversations', () => {
         },
       });
 
-    render(<Direct />);
+    renderDirect();
     await screen.findByText('Start the conversation.');
     const composer = screen.getByRole('textbox', { name: 'Message' });
     fireEvent.change(composer, { target: { value: 'first' } });
@@ -228,7 +231,7 @@ describe('Direct conversations', () => {
     });
     vi.spyOn(nativeClient, 'thread').mockResolvedValue({ items: [message('g1', 'hello', 'member-1')] });
 
-    const { container } = render(<Direct />);
+    const { container } = renderDirect();
     expect(await screen.findByText('hello')).toBeInTheDocument();
     expect(container.querySelectorAll('.group-avatar').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByPlaceholderText('Message Design crew')).toBeInTheDocument();
@@ -245,7 +248,7 @@ describe('Direct conversations', () => {
     });
     vi.spyOn(nativeClient, 'thread').mockResolvedValue({ items: [message('old', '', 'viewer')] });
 
-    render(<Direct />);
+    renderDirect();
     expect(await screen.findByText(/Liked a message/)).toBeInTheDocument();
     expect(screen.queryByText(/You sent an attachment/)).not.toBeInTheDocument();
     await waitFor(() => expect(nativeClient.markRead).toHaveBeenCalledWith('a', 'mid.reaction-1'));

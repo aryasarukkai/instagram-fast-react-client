@@ -12,6 +12,7 @@ import json
 import re
 import secrets
 from typing import Any, Callable
+from urllib.parse import quote
 import uuid
 
 import requests
@@ -219,12 +220,26 @@ def _timestamp(value: Any) -> int:
 def _user_short(user: Any) -> dict[str, Any]:
     """Normalize either an instagrapi UserShort model or a raw user dict."""
     get = user.get if isinstance(user, dict) else lambda key, default=None: getattr(user, key, default)
+    friendship = get("friendship_status")
+    if friendship is not None and not isinstance(friendship, dict):
+        friendship = {
+            "following": bool(getattr(friendship, "following", False)),
+            "followed_by": bool(getattr(friendship, "followed_by", False)),
+            "outgoing_request": bool(getattr(friendship, "outgoing_request", False)),
+            "incoming_request": bool(getattr(friendship, "incoming_request", False)),
+        }
+    friendship = friendship if isinstance(friendship, dict) else None
     return {
         "id": _string(get("pk") or get("id")),
         "username": _string(get("username"), "instagram"),
         "fullName": _string(get("full_name")),
         "profilePictureUrl": _url(get("profile_pic_url")),
         "verified": bool(get("is_verified", False)),
+        "friendshipKnown": friendship is not None,
+        "following": bool(friendship.get("following")) if friendship is not None else False,
+        "followedBy": bool(friendship.get("followed_by")) if friendship is not None else False,
+        "outgoingRequest": bool(friendship.get("outgoing_request")) if friendship is not None else False,
+        "incomingRequest": bool(friendship.get("incoming_request")) if friendship is not None else False,
     }
 
 
@@ -484,6 +499,7 @@ def normalize_comment(comment: Any) -> dict[str, Any]:
         "likeCount": _integer(getattr(comment, "like_count", 0)),
         "liked": bool(getattr(comment, "has_liked", False)),
         "replyTo": _string(getattr(comment, "replied_to_comment_id", None)) or None,
+        "replyCount": _integer(getattr(comment, "child_comment_count", 0)),
     }
 
 
@@ -551,6 +567,13 @@ def _web_share(item: dict[str, Any]) -> dict[str, Any] | None:
 
 def _normalize_web_profile_user(user: dict[str, Any]) -> dict[str, Any]:
     """Normalize the user object from web_profile_info (GraphQL edge shape)."""
+    friendship = user.get("friendship_status") if isinstance(user.get("friendship_status"), dict) else {}
+    following = user.get("followed_by_viewer")
+    if following is None:
+        following = friendship.get("following")
+    followed_by = user.get("follows_viewer")
+    if followed_by is None:
+        followed_by = friendship.get("followed_by")
     return {
         "id": _string(user.get("id")),
         "username": _string(user.get("username"), "instagram"),
@@ -562,6 +585,14 @@ def _normalize_web_profile_user(user: dict[str, Any]) -> dict[str, Any]:
         "mediaCount": _integer((user.get("edge_owner_to_timeline_media") or {}).get("count")),
         "followerCount": _integer((user.get("edge_followed_by") or {}).get("count")),
         "followingCount": _integer((user.get("edge_follow") or {}).get("count")),
+        "following": bool(following) if following is not None else False,
+        "followedBy": bool(followed_by) if followed_by is not None else False,
+        "friendshipKnown": True,
+        "outgoingRequest": bool(
+            friendship.get("outgoing_request")
+            if friendship.get("outgoing_request") is not None
+            else user.get("requested_by_viewer", False)
+        ),
     }
 
 
@@ -596,6 +627,73 @@ def _normalize_web_grid_media(node: dict[str, Any]) -> dict[str, Any]:
 def _media_pk(media_id: str) -> str:
     """Bare media pk — web GraphQL likes/saves reject the `{pk}_{user}` form."""
     return _string(media_id).split("_", 1)[0]
+
+
+def _first_version_url(versions: Any) -> str | None:
+    """First usable CDN url from a `video_versions` list or `image_versions2` dict."""
+    if isinstance(versions, dict):
+        versions = versions.get("candidates") or versions.get("items") or []
+    if isinstance(versions, list):
+        for version in versions:
+            url = _url(_model_value(version, "url"))
+            if url:
+                return url
+    return None
+
+
+def _clip_audio_label(clips: Any) -> str | None:
+    """`artist · title` for a clip's licensed music or original sound, if any."""
+    if not isinstance(clips, dict):
+        return None
+    music = clips.get("music_info")
+    asset = music.get("music_asset_info") if isinstance(music, dict) else None
+    if isinstance(asset, dict):
+        label = " · ".join(
+            part for part in (_string(asset.get("display_artist")), _string(asset.get("title"))) if part
+        )
+        if label:
+            return label
+    original = clips.get("original_sound_info")
+    if isinstance(original, dict):
+        artist = original.get("ig_artist")
+        artist_name = _string(artist.get("username")) if isinstance(artist, dict) else ""
+        label = " · ".join(
+            part for part in (artist_name, _string(original.get("original_audio_title"))) if part
+        )
+        if label:
+            return label
+    return None
+
+
+def _normalize_web_clip(media: Any) -> dict[str, Any] | None:
+    """One reel from a Polaris `XDTMediaDict` clips node into the shared reel shape."""
+    if not isinstance(media, dict):
+        return None
+    video_url = _first_version_url(media.get("video_versions"))
+    if not video_url:
+        return None
+    caption = media.get("caption")
+    location = media.get("location")
+    return {
+        "id": _string(media.get("id") or media.get("pk")),
+        "code": _string(media.get("code")),
+        "kind": "video",
+        "user": _user_short(media.get("user")),
+        "caption": _string(caption.get("text")) if isinstance(caption, dict) else "",
+        "takenAt": _integer(media.get("taken_at")),
+        "location": _string(location.get("name")) if isinstance(location, dict) else "",
+        "likeCount": _integer(media.get("like_count")),
+        "commentCount": _integer(media.get("comment_count")),
+        "viewCount": _integer(media.get("view_count") or media.get("play_count") or 0),
+        "liked": bool(media.get("has_liked")),
+        "saved": bool(media.get("has_viewer_saved")),
+        "imageUrl": _first_version_url(media.get("image_versions2")),
+        "videoUrl": video_url,
+        "audio": _clip_audio_label(media.get("clips_metadata")),
+        "trackingToken": _string(media.get("organic_tracking_token")) or None,
+        "loggingInfoToken": _string(media.get("logging_info_token")) or None,
+        "children": [],
+    }
 
 
 def _web_reply_text(item: dict[str, Any]) -> str | None:
@@ -908,7 +1006,51 @@ def _normalize_web_comment(comment: dict[str, Any]) -> dict[str, Any]:
         "likeCount": _integer(comment.get("comment_like_count") or comment.get("like_count")),
         "liked": bool(comment.get("has_liked_comment") or comment.get("has_liked", False)),
         "replyTo": _string(comment.get("replied_to_comment_id")) or None,
+        "replyCount": _integer(comment.get("child_comment_count")),
     }
+
+
+def _normalize_child_comments(payload: Any, comment_id: str) -> dict[str, Any]:
+    """Shape a `child_comments/` response into the renderer's reply contract.
+
+    Instagram pages replies with `min_id` and only says whether more exist, so the
+    cursor for the next page is the last reply we were handed.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    items: list[dict[str, Any]] = []
+    for reply in payload.get("child_comments") or []:
+        if not isinstance(reply, dict):
+            continue
+        normalized = _normalize_web_comment(reply)
+        normalized["replyTo"] = normalized["replyTo"] or comment_id
+        items.append(normalized)
+    has_more = bool(
+        payload.get("has_more_tail_child_comments") or payload.get("has_more_head_child_comments")
+    )
+    return {
+        "items": items,
+        "replyCount": _integer(payload.get("child_comment_count")),
+        "nextCursor": (items[-1]["id"] if has_more and items else None),
+    }
+
+
+def _flatten_web_comments(raw: Any) -> list[dict[str, Any]]:
+    """Return top-level comments followed by whatever replies Instagram previewed
+    inline, each carrying `replyTo` so the renderer can nest them."""
+    items: list[dict[str, Any]] = []
+    for comment in raw if isinstance(raw, list) else []:
+        if not isinstance(comment, dict):
+            continue
+        parent = _normalize_web_comment(comment)
+        items.append(parent)
+        previews = comment.get("preview_child_comments")
+        for child in previews if isinstance(previews, list) else []:
+            if not isinstance(child, dict):
+                continue
+            reply = _normalize_web_comment(child)
+            reply["replyTo"] = reply["replyTo"] or parent["id"]
+            items.append(reply)
+    return items
 
 
 def normalize_thread(thread: Any, viewer_id: str) -> dict[str, Any]:
@@ -973,33 +1115,71 @@ def normalize_activity(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(story, dict):
                 continue
             args = story.get("args") or {}
-            text = _string(args.get("text"))
+            text = _string(args.get("text") or args.get("rich_text"))
             if not text:
                 continue
             profile = (args.get("profile_image") or "")
+            media = args.get("media") if isinstance(args.get("media"), list) else []
+            thumb = None
+            if media and isinstance(media[0], dict):
+                # Prefer a real image URL; never fall back to a media pk (renders as "?").
+                thumb = media[0].get("image")
+            inline = args.get("inline_follow") if isinstance(args.get("inline_follow"), dict) else {}
+            user_info = inline.get("user_info") if isinstance(inline.get("user_info"), dict) else {}
+            friendship = (
+                user_info.get("friendship_status")
+                if isinstance(user_info.get("friendship_status"), dict)
+                else {}
+            )
+            user_id = _string(args.get("profile_id") or user_info.get("id") or user_info.get("pk")) or None
             items.append(
                 {
-                    "id": _string(story.get("pk") or args.get("timestamp")),
+                    "id": _string(story.get("pk") or args.get("timestamp") or args.get("tuuid")),
                     "text": text,
-                    "username": _string(args.get("profile_name")),
-                    "profilePictureUrl": _url(profile),
+                    "username": _string(args.get("profile_name") or user_info.get("username")),
+                    "userId": user_id,
+                    "profilePictureUrl": _url(profile or user_info.get("profile_pic_url")),
                     "timestamp": _integer(args.get("timestamp")),
-                    "thumbnailUrl": _url((args.get("media") or [{}])[0].get("image") if args.get("media") else None),
+                    "thumbnailUrl": _url(thumb),
                     "unread": bucket == "new_stories",
+                    "kind": _string(story.get("notif_name") or story.get("story_type")),
+                    "following": bool(friendship.get("following", False)),
+                    "followedBy": bool(friendship.get("followed_by", False)),
+                    "incomingRequest": bool(friendship.get("incoming_request", False)),
+                    "outgoingRequest": bool(friendship.get("outgoing_request", False)),
                 }
             )
     return {"items": items}
 
 
 def normalize_user(user: Any) -> dict[str, Any]:
+    friendship = getattr(user, "friendship_status", None)
+    if isinstance(user, dict):
+        friendship = user.get("friendship_status") or friendship
+    following = False
+    followed_by = False
+    outgoing = False
+    if friendship is not None:
+        get = friendship.get if isinstance(friendship, dict) else lambda key, default=None: getattr(friendship, key, default)
+        following = bool(get("following", False))
+        followed_by = bool(get("followed_by", False))
+        outgoing = bool(get("outgoing_request", False))
     return {
         **_user_short(user),
-        "biography": _string(getattr(user, "biography", None)),
-        "isPrivate": bool(getattr(user, "is_private", False)),
-        "mediaCount": _integer(getattr(user, "media_count", 0)),
-        "followerCount": _integer(getattr(user, "follower_count", 0)),
-        "followingCount": _integer(getattr(user, "following_count", 0)),
-        "profilePictureUrl": _url(getattr(user, "profile_pic_url_hd", None) or getattr(user, "profile_pic_url", None)),
+        "biography": _string(getattr(user, "biography", None) if not isinstance(user, dict) else user.get("biography")),
+        "isPrivate": bool(getattr(user, "is_private", False) if not isinstance(user, dict) else user.get("is_private", False)),
+        "mediaCount": _integer(getattr(user, "media_count", 0) if not isinstance(user, dict) else user.get("media_count", 0)),
+        "followerCount": _integer(getattr(user, "follower_count", 0) if not isinstance(user, dict) else user.get("follower_count", 0)),
+        "followingCount": _integer(getattr(user, "following_count", 0) if not isinstance(user, dict) else user.get("following_count", 0)),
+        "profilePictureUrl": _url(
+            getattr(user, "profile_pic_url_hd", None) or getattr(user, "profile_pic_url", None)
+            if not isinstance(user, dict)
+            else (user.get("profile_pic_url_hd") or user.get("profile_pic_url"))
+        ),
+        "following": following,
+        "followedBy": followed_by,
+        "friendshipKnown": friendship is not None,
+        "outgoingRequest": outgoing,
     }
 
 
@@ -1442,6 +1622,26 @@ class ProtocolEngine:
         comments = self._guarded(lambda: client.media_comments(media_id, amount=amount), "comments")
         return {"items": [normalize_comment(comment) for comment in (comments or [])]}
 
+    def media_comment_replies(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        params = params or {}
+        media_id = _media_pk(_string(params.get("mediaId")))
+        comment_id = _string(params.get("commentId"))
+        if not media_id or not comment_id:
+            raise ProtocolError("invalid_request", "A media id and comment id are required.")
+        query = {
+            "min_id": _string(params.get("cursor")),
+            "is_chronological": "true",
+            "paging_direction": "view_more",
+        }
+        payload = self._guarded(
+            lambda: client.private_request(
+                f"media/{media_id}/comments/{comment_id}/child_comments/", params=query
+            ),
+            "comment replies",
+        )
+        return _normalize_child_comments(payload, comment_id)
+
     def media_like(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         client = self._require_client()
         media_id = _media_pk(_string((params or {}).get("mediaId")))
@@ -1473,6 +1673,64 @@ class ProtocolEngine:
             raise ProtocolError("invalid_request", "A media id is required.")
         self._guarded(lambda: client.media_unsave(media_id), "unsave")
         return {"saved": False, "mediaId": media_id}
+
+    def media_comment_like(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        comment_id = _string((params or {}).get("commentId"))
+        if not comment_id:
+            raise ProtocolError("invalid_request", "A comment id is required.")
+        self._guarded(lambda: client.comment_like(comment_id), "comment like")
+        return {"liked": True, "commentId": comment_id}
+
+    def media_comment_unlike(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        comment_id = _string((params or {}).get("commentId"))
+        if not comment_id:
+            raise ProtocolError("invalid_request", "A comment id is required.")
+        self._guarded(lambda: client.comment_unlike(comment_id), "comment unlike")
+        return {"liked": False, "commentId": comment_id}
+
+    def user_follow(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        user_id = _string((params or {}).get("userId"))
+        if not user_id:
+            raise ProtocolError("invalid_request", "A user id is required.")
+        self._guarded(lambda: client.user_follow(user_id), "follow")
+        return {"following": True, "outgoingRequest": False, "userId": user_id}
+
+    def user_unfollow(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        user_id = _string((params or {}).get("userId"))
+        if not user_id:
+            raise ProtocolError("invalid_request", "A user id is required.")
+        self._guarded(lambda: client.user_unfollow(user_id), "unfollow")
+        return {"following": False, "outgoingRequest": False, "userId": user_id}
+
+    def user_follow_request_approve(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        user_id = _string((params or {}).get("userId"))
+        if not user_id:
+            raise ProtocolError("invalid_request", "A user id is required.")
+        self._guarded(lambda: client.user_follow_request_approve(user_id), "approve follow request")
+        return {
+            "ok": True,
+            "incomingRequest": False,
+            "followedBy": True,
+            "userId": user_id,
+        }
+
+    def user_follow_request_decline(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client = self._require_client()
+        user_id = _string((params or {}).get("userId"))
+        if not user_id:
+            raise ProtocolError("invalid_request", "A user id is required.")
+        self._guarded(lambda: client.user_follow_request_decline(user_id), "decline follow request")
+        return {
+            "ok": True,
+            "incomingRequest": False,
+            "followedBy": False,
+            "userId": user_id,
+        }
 
     def user_profile(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         client = self._require_client()
@@ -1819,6 +2077,64 @@ class ProtocolEngine:
         payload = self._web_request("GET", "/api/v1/feed/reels_tray/", cookies)
         return normalize_story_tray(payload, viewer_id=_string(cookies.get("ds_user_id")))
 
+    def web_reels(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The desktop Reels ("clips home") recommendation feed with cursor paging.
+
+        Mirrors Polaris' `PolarisClipsTabDesktop*` Relay queries: the container
+        query cold-starts the feed and the pagination query walks it forward,
+        both returning the same `clips__home__connection_v2` edge shape.
+        """
+        cookies = self._web_cookies(params)
+        params = params or {}
+        cursor = _string(params.get("cursor"))
+        seen = params.get("seenIds")
+        if cursor:
+            seen_ids = [{"id": _string(item)} for item in seen if _string(item)] if isinstance(seen, list) else []
+            variables: dict[str, Any] = {
+                "after": cursor,
+                "before": None,
+                "data": {
+                    "container_module": "clips_tab_desktop_page",
+                    "seen_reels": json.dumps(seen_ids, separators=(",", ":")),
+                },
+                "first": 10,
+                "last": None,
+                "__relay_internal__pv__PolarisReelsRecoDebugOverlayEnabledrelayprovider": False,
+            }
+            friendly_name = "PolarisClipsTabDesktopPaginationQuery"
+            doc_id = "28115468621393196"
+        else:
+            variables = {
+                "data": {"container_module": "clips_tab_desktop_page"},
+                "first": 10,
+                "__relay_internal__pv__PolarisReelsRecoDebugOverlayEnabledrelayprovider": False,
+            }
+            friendly_name = "PolarisClipsTabDesktopContainerQuery"
+            doc_id = "27865048666517472"
+        payload = self._web_graphql(
+            cookies,
+            friendly_name=friendly_name,
+            doc_id=doc_id,
+            variables=variables,
+            referer=f"{_WEB_BASE}/reels/",
+        )
+        connection = (payload.get("data") or {}).get("xdt_api__v1__clips__home__connection_v2") or {}
+        edges = connection.get("edges") if isinstance(connection.get("edges"), list) else []
+        items: list[dict[str, Any]] = []
+        for edge in edges:
+            node = edge.get("node") if isinstance(edge, dict) else None
+            media = node.get("media") if isinstance(node, dict) else None
+            clip = _normalize_web_clip(media)
+            if clip is not None:
+                items.append(clip)
+        page_info = connection.get("page_info") if isinstance(connection.get("page_info"), dict) else {}
+        has_more = bool(page_info.get("has_next_page"))
+        return {
+            "items": items,
+            "nextCursor": _string(page_info.get("end_cursor")) if has_more else None,
+            "hasMore": has_more,
+        }
+
     def web_comments(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         cookies = self._web_cookies(params)
         media_id = _media_pk(_string((params or {}).get("mediaId")))
@@ -1829,12 +2145,34 @@ class ProtocolEngine:
             f"/api/v1/media/{media_id}/comments/?can_support_threading=true&permalink_enabled=false",
             cookies,
         )
-        raw = payload.get("comments")
-        comments = raw if isinstance(raw, list) else []
+        emojis = [
+            _string(entry.get("unicode"))
+            for entry in (payload.get("quick_response_emojis") or [])
+            if isinstance(entry, dict) and _string(entry.get("unicode"))
+        ]
         return {
-            "items": [_normalize_web_comment(c) for c in comments if isinstance(c, dict)],
+            "items": _flatten_web_comments(payload.get("comments")),
             "nextCursor": _string(payload.get("next_min_id")) or None,
+            "quickEmojis": emojis,
         }
+
+    def web_comment_replies(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Child comments of one thread. `can_support_threading=true` on the parent
+        request keeps replies behind this endpoint; the query shape matches the
+        web client's "view more replies" request."""
+        cookies = self._web_cookies(params)
+        params = params or {}
+        media_id = _media_pk(_string(params.get("mediaId")))
+        comment_id = _string(params.get("commentId"))
+        if not media_id or not comment_id:
+            raise ProtocolError("invalid_request", "A media id and comment id are required.")
+        cursor = _string(params.get("cursor"))
+        path = (
+            f"/api/v1/media/{media_id}/comments/{comment_id}/child_comments/"
+            f"?min_id={quote(cursor, safe='')}&is_chronological=true&paging_direction=view_more"
+        )
+        payload = self._web_request("GET", path, cookies)
+        return _normalize_child_comments(payload, comment_id)
 
     def web_threads(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         cookies = self._web_cookies(params)
@@ -2043,6 +2381,156 @@ class ProtocolEngine:
         )
         return {"saved": False, "mediaId": media_id}
 
+    def web_comment_like(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        comment_id = _string((params or {}).get("commentId"))
+        if not comment_id:
+            raise ProtocolError("invalid_request", "A comment id is required.")
+        actor_id = self._web_actor_id(cookies)
+        variables = {
+            "input": {
+                "comment_id": comment_id,
+                "actor_id": actor_id,
+                "client_mutation_id": self._next_mutation_id(),
+            }
+        }
+        self._web_graphql(
+            cookies,
+            friendly_name="PolarisCommentActionsLikeMutation",
+            doc_id="27184292767848867",
+            variables=variables,
+            actor_id=actor_id,
+        )
+        return {"liked": True, "commentId": comment_id}
+
+    def web_comment_unlike(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Unlike via the private REST path Instagram exposes under www (no unlike GraphQL in HAR)."""
+        cookies = self._web_cookies(params)
+        comment_id = _string((params or {}).get("commentId"))
+        if not comment_id:
+            raise ProtocolError("invalid_request", "A comment id is required.")
+        self._web_request(
+            "POST",
+            f"/api/v1/media/{comment_id}/comment_unlike/",
+            cookies,
+            data={"comment_id": comment_id},
+        )
+        return {"liked": False, "commentId": comment_id}
+
+    def web_follow(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        user_id = _string((params or {}).get("userId"))
+        if not user_id:
+            raise ProtocolError("invalid_request", "A user id is required.")
+        variables = {
+            "target_user_id": user_id,
+            "container_module": "profile",
+            "nav_chain": "PolarisProfilePostsTabRoot:profilePage:1:via_cold_start",
+        }
+        payload = self._web_graphql(
+            cookies,
+            friendly_name="usePolarisFollowMutation",
+            doc_id="26508036048874888",
+            variables=variables,
+            actor_id=self._web_actor_id(cookies),
+        )
+        status = ((payload.get("data") or {}).get("xdt_create_friendship") or {}).get("friendship_status") or {}
+        return {
+            "following": bool(status.get("following", True)),
+            "outgoingRequest": bool(status.get("outgoing_request", False)),
+            "userId": user_id,
+        }
+
+    def web_unfollow(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        cookies = self._web_cookies(params)
+        user_id = _string((params or {}).get("userId"))
+        if not user_id:
+            raise ProtocolError("invalid_request", "A user id is required.")
+        variables = {
+            "target_user_id": user_id,
+            "container_module": "profile",
+            "nav_chain": "PolarisProfilePostsTabRoot:profilePage:1:via_cold_start",
+        }
+        payload = self._web_graphql(
+            cookies,
+            friendly_name="usePolarisUnfollowMutation",
+            doc_id="27789106940691111",
+            variables=variables,
+            actor_id=self._web_actor_id(cookies),
+        )
+        status = ((payload.get("data") or {}).get("xdt_destroy_friendship") or {}).get("friendship_status") or {}
+        return {
+            "following": bool(status.get("following", False)),
+            "outgoingRequest": bool(status.get("outgoing_request", False)),
+            "userId": user_id,
+        }
+
+    def web_follow_request_approve(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Accept an incoming follow request (www REST; complements friendships/pending)."""
+        cookies = self._web_cookies(params)
+        user_id = _string((params or {}).get("userId"))
+        if not user_id:
+            raise ProtocolError("invalid_request", "A user id is required.")
+        payload = self._web_request(
+            "POST",
+            f"/api/v1/friendships/approve/{user_id}/",
+            cookies,
+            data={"user_id": user_id, "container_module": "newsfeed"},
+            referer=f"{_WEB_BASE}/notifications/",
+        )
+        status = payload.get("friendship_status") if isinstance(payload.get("friendship_status"), dict) else {}
+        return {
+            "ok": True,
+            "incomingRequest": bool(status.get("incoming_request", False)),
+            "followedBy": bool(status.get("followed_by", True)),
+            "following": bool(status.get("following", False)),
+            "outgoingRequest": bool(status.get("outgoing_request", False)),
+            "userId": user_id,
+        }
+
+    def web_follow_request_decline(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Delete/ignore an incoming follow request (www REST friendships/ignore)."""
+        cookies = self._web_cookies(params)
+        user_id = _string((params or {}).get("userId"))
+        if not user_id:
+            raise ProtocolError("invalid_request", "A user id is required.")
+        payload = self._web_request(
+            "POST",
+            f"/api/v1/friendships/ignore/{user_id}/",
+            cookies,
+            data={"user_id": user_id, "container_module": "newsfeed"},
+            referer=f"{_WEB_BASE}/notifications/",
+        )
+        status = payload.get("friendship_status") if isinstance(payload.get("friendship_status"), dict) else {}
+        return {
+            "ok": True,
+            "incomingRequest": bool(status.get("incoming_request", False)),
+            "followedBy": bool(status.get("followed_by", False)),
+            "following": bool(status.get("following", False)),
+            "outgoingRequest": bool(status.get("outgoing_request", False)),
+            "userId": user_id,
+        }
+
+    def web_activity(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Notifications feed via the same REST inbox Polariss posts (HAR: POST /api/v1/news/inbox/)."""
+        cookies = self._web_cookies(params)
+        tokens = self._fetch_web_tokens(cookies)
+        fb_dtsg = tokens.get("fb_dtsg")
+        if not fb_dtsg:
+            raise ProtocolError(
+                "web_request_failed",
+                "Could not obtain an Instagram activity token — try re-importing the session.",
+            )
+        jazoest = "2" + str(sum(bytearray(fb_dtsg, "utf-8")))
+        payload = self._web_request(
+            "POST",
+            "/api/v1/news/inbox/",
+            cookies,
+            data={"fb_dtsg": fb_dtsg, "jazoest": jazoest},
+            referer=f"{_WEB_BASE}/notifications/",
+        )
+        return normalize_activity(payload)
+
     def web_mark_read(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         cookies = self._web_cookies(params)
         thread_id = _string((params or {}).get("threadId"))
@@ -2089,26 +2577,42 @@ class ProtocolEngine:
 
     def web_share_media(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         cookies = self._web_cookies(params)
-        media_id = _media_pk(_string((params or {}).get("mediaId")))
-        user_id = _string((params or {}).get("userId"))
-        if not media_id or not user_id:
-            raise ProtocolError("invalid_request", "A media id and recipient user id are required.")
+        params = params or {}
+        media_id = _media_pk(_string(params.get("mediaId")))
+        thread_id = _string(params.get("threadId"))
+        user_id = _string(params.get("userId"))
+        if not media_id or not (thread_id or user_id):
+            raise ProtocolError(
+                "invalid_request",
+                "A media id and a recipient thread or user are required.",
+            )
         offline_threading_id = str(secrets.randbits(63))
+        # The web share sheet ranks existing conversations, so a chosen recipient is
+        # a thread. `IGDirectReelShareMutation` shares any media into that thread;
+        # recipient_users remains a fallback for a bare user id (no thread yet).
         variables = {
-            "send_data": {
+            "ig_media_igid": media_id,
+            "otid": offline_threading_id,
+            "data": {
                 "forwarded_from_thread_id": None,
                 "is_forwarded_from_own_message": None,
                 "offline_threading_id": offline_threading_id,
-                "recipient_users": json.dumps([user_id]),
-                "thread_id": None,
+                "recipient_users": None if thread_id else json.dumps([user_id]),
+                "thread_id": thread_id or None,
             },
-            "data": {"media_id": media_id},
+            "clip_share_params": {
+                "inventory_source": "",
+                "send_attribution": "igd_web_share_sheet:reel",
+                "text": None,
+                "tracking_token": None,
+            },
         }
         self._web_graphql(
             cookies,
-            friendly_name="IGDirectMediaShareMutation",
-            doc_id="27442850591982122",
+            friendly_name="IGDirectReelShareMutation",
+            doc_id="26212720875066239",
             variables=variables,
+            referer=f"{_WEB_BASE}/direct/t/{thread_id}/" if thread_id else f"{_WEB_BASE}/",
         )
         return {"ok": True, "messageId": offline_threading_id}
 
@@ -2214,13 +2718,23 @@ class ProtocolEngine:
                 if not isinstance(entry, dict):
                     continue
                 thread_id = _string(entry.get("thread_id") or entry.get("share_sheet_item_id"))
-                title = _string(entry.get("thread_title"))
-                users_raw = entry.get("users") if isinstance(entry.get("users"), list) else []
-                users = [_user_short(u) for u in users_raw if isinstance(u, dict)]
-                if not title and users:
-                    title = ", ".join(u["username"] for u in users)
-                if thread_id:
-                    items.append({"threadId": thread_id, "title": title, "users": users})
+                if not thread_id:
+                    continue
+                # Ranked share-sheet threads carry only a title and member avatars —
+                # no user ids or usernames — so sharing targets a thread, not a user.
+                avatars_raw = entry.get("users") if isinstance(entry.get("users"), list) else []
+                avatars = [
+                    _url(user.get("profile_pic_url")) for user in avatars_raw if isinstance(user, dict)
+                ]
+                avatars = [url for url in avatars if url]
+                items.append(
+                    {
+                        "threadId": thread_id,
+                        "title": _string(entry.get("thread_title")),
+                        "avatars": avatars,
+                        "isGroup": len(avatars_raw) > 1,
+                    }
+                )
         return {"items": items}
 
     def _web_profile_info(self, cookies: dict[str, Any], username: str) -> dict[str, Any]:
@@ -2278,10 +2792,12 @@ class ProtocolEngine:
             "health": self.health,
             "web.timeline": self.web_timeline,
             "web.stories": self.web_stories,
+            "web.reels": self.web_reels,
             "web.account": self.web_account,
             "web.profile": self.web_profile,
             "web.medias": self.web_medias,
             "web.comments": self.web_comments,
+            "web.comment_replies": self.web_comment_replies,
             "web.threads": self.web_threads,
             "web.thread": self.web_thread,
             "web.send": self.web_send,
@@ -2289,6 +2805,13 @@ class ProtocolEngine:
             "web.unlike": self.web_unlike,
             "web.save": self.web_save,
             "web.unsave": self.web_unsave,
+            "web.comment_like": self.web_comment_like,
+            "web.comment_unlike": self.web_comment_unlike,
+            "web.follow": self.web_follow,
+            "web.unfollow": self.web_unfollow,
+            "web.follow_request_approve": self.web_follow_request_approve,
+            "web.follow_request_decline": self.web_follow_request_decline,
+            "web.activity": self.web_activity,
             "web.mark_read": self.web_mark_read,
             "web.react": self.web_react,
             "web.share_media": self.web_share_media,
@@ -2309,12 +2832,19 @@ class ProtocolEngine:
             "feed.reels": self.feed_reels,
             "feed.explore": self.feed_explore,
             "media.comments": self.media_comments,
+            "media.comment_replies": self.media_comment_replies,
             "media.like": self.media_like,
             "media.unlike": self.media_unlike,
             "media.save": self.media_save,
             "media.unsave": self.media_unsave,
+            "media.comment_like": self.media_comment_like,
+            "media.comment_unlike": self.media_comment_unlike,
             "user.profile": self.user_profile,
             "user.medias": self.user_medias,
+            "user.follow": self.user_follow,
+            "user.unfollow": self.user_unfollow,
+            "user.follow_request_approve": self.user_follow_request_approve,
+            "user.follow_request_decline": self.user_follow_request_decline,
             "activity.inbox": self.activity_inbox,
             "direct.threads": self.direct_threads,
             "direct.thread": self.direct_thread,

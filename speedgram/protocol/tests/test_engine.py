@@ -493,6 +493,89 @@ def test_web_comments_normalizes(monkeypatch) -> None:
     assert "/api/v1/media/42/comments/" in fake.calls[0]["url"]
 
 
+def test_web_comments_nests_preview_replies_and_quick_emojis(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    payload = {
+        "comments": [
+            {
+                "pk": "18109412317804113",
+                "user": {"pk": "5", "username": "aeri"},
+                "text": "parent",
+                "created_at_utc": 1_700_000_000,
+                "child_comment_count": 8,
+                "preview_child_comments": [
+                    {
+                        "pk": "18109169189076965",
+                        "user": {"pk": "6", "username": "bo"},
+                        "text": "reply",
+                        "created_at_utc": 1_700_000_100,
+                    }
+                ],
+            }
+        ],
+        "quick_response_emojis": [{"unicode": "❤️"}, {"unicode": "😭"}],
+    }
+    fake = FakeRequests(FakeResponse(200, payload))
+    monkeypatch.setattr(engine_module, "requests", fake)
+
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    result = engine.dispatch("web.comments", {"cookies": {"sessionid": "s"}, "mediaId": "42"})
+
+    parent, reply = result["items"]
+    assert parent["replyCount"] == 8
+    assert parent["replyTo"] is None
+    # Previewed replies are flattened but carry their parent so the sheet can nest them.
+    assert reply["replyTo"] == "18109412317804113"
+    assert result["quickEmojis"] == ["❤️", "😭"]
+
+
+def test_web_comment_replies_pages_with_min_id(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    payload = {
+        "child_comment_count": 8,
+        "child_comments": [
+            {
+                "pk": "18109169189076965",
+                "user": {"pk": "6", "username": "bo"},
+                "text": "absolutely right",
+                "created_at_utc": 1_700_000_100,
+                "comment_like_count": 6,
+                "parent_comment_id": "18109412317804113",
+                "replied_to_comment_id": "18109412317804113",
+            }
+        ],
+        "has_more_head_child_comments": False,
+        "has_more_tail_child_comments": True,
+    }
+    fake = FakeRequests(FakeResponse(200, payload))
+    monkeypatch.setattr(engine_module, "requests", fake)
+
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    result = engine.dispatch(
+        "web.comment_replies",
+        {"cookies": {"sessionid": "s"}, "mediaId": "42", "commentId": "18109412317804113"},
+    )
+
+    assert result["items"][0]["id"] == "18109169189076965"
+    assert result["items"][0]["replyTo"] == "18109412317804113"
+    assert result["items"][0]["likeCount"] == 6
+    assert result["replyCount"] == 8
+    # Instagram exposes no reply cursor: the last id we hold is the next min_id.
+    assert result["nextCursor"] == "18109169189076965"
+    url = fake.calls[0]["url"]
+    assert "/api/v1/media/42/comments/18109412317804113/child_comments/" in url
+    assert "is_chronological=true" in url and "paging_direction=view_more" in url
+
+
+def test_web_comment_replies_requires_ids() -> None:
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    with pytest.raises(ProtocolError) as excinfo:
+        engine.dispatch("web.comment_replies", {"cookies": {"sessionid": "s"}, "mediaId": "42"})
+    assert excinfo.value.code == "invalid_request"
+
+
 class DirectHydrationFakeRequests:
     """Serves page tokens plus captured-shape Polaris inbox/thread GraphQL data."""
 
@@ -653,9 +736,14 @@ class InteractionFakeRequests:
 
     RequestException = Exception
 
-    def __init__(self, graphql_payload: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        graphql_payload: dict[str, Any] | None = None,
+        rest_payload: dict[str, Any] | None = None,
+    ) -> None:
         self.calls: list[dict[str, Any]] = []
         self.graphql_payload = graphql_payload or {"data": {"ok": True}}
+        self.rest_payload = rest_payload or {"status": "ok"}
 
     def request(self, method: str, url: str, **kwargs: Any) -> Any:
         self.calls.append({"method": method, "url": url, **kwargs})
@@ -664,10 +752,15 @@ class InteractionFakeRequests:
             return type("R", (), {"status_code": 200, "text": html, "json": lambda self: {}})()
         if method == "GET" and "/api/v1/users/" in url and url.endswith("/info/"):
             return FakeResponse(200, {"user": {"pk": "42", "fbid_v2": "17841450859296213", "username": "me"}})
+        if method == "POST" and "/api/graphql" not in url:
+            return FakeResponse(200, self.rest_payload)
         return FakeResponse(200, self.graphql_payload)
 
     def graphql_posts(self) -> list[dict[str, Any]]:
         return [c for c in self.calls if c["method"] == "POST" and c["url"].endswith("/api/graphql")]
+
+    def rest_posts(self) -> list[dict[str, Any]]:
+        return [c for c in self.calls if c["method"] == "POST" and "/api/graphql" not in c["url"]]
 
 
 def test_web_like_and_unlike_use_har_contracts(monkeypatch) -> None:
@@ -755,15 +848,23 @@ def test_web_mark_read_react_share_forward_translate(monkeypatch) -> None:
 
     fake.calls.clear()
     shared = engine.dispatch(
-        "web.share_media", {"cookies": cookies, "mediaId": "99_1", "userId": "59241102400"}
+        "web.share_media", {"cookies": cookies, "mediaId": "99_1", "threadId": "340282"}
     )
     assert shared["ok"] is True
     share_body = fake.graphql_posts()[0]["data"]
-    assert share_body["doc_id"] == "27442850591982122"
-    assert '"media_id":"99"' in share_body["variables"]
-    assert r'"recipient_users":"[\"59241102400\"]"' in share_body["variables"] or (
-        '"59241102400"' in share_body["variables"]
-    )
+    assert share_body["fb_api_req_friendly_name"] == "IGDirectReelShareMutation"
+    assert share_body["doc_id"] == "26212720875066239"
+    assert '"ig_media_igid":"99"' in share_body["variables"]
+    assert '"thread_id":"340282"' in share_body["variables"]
+    assert '"recipient_users":null' in share_body["variables"]
+
+    fake.calls.clear()
+    # A bare user id (no existing thread) still shares via recipient_users.
+    engine.dispatch("web.share_media", {"cookies": cookies, "mediaId": "99_1", "userId": "59241102400"})
+    user_share = fake.graphql_posts()[0]["data"]
+    assert user_share["doc_id"] == "26212720875066239"
+    assert r'"recipient_users":"[\"59241102400\"]"' in user_share["variables"]
+    assert '"thread_id":null' in user_share["variables"]
 
     fake.calls.clear()
     forwarded = engine.dispatch(
@@ -788,6 +889,104 @@ def test_web_mark_read_react_share_forward_translate(monkeypatch) -> None:
     assert translated["translatedText"] == "hola"
 
 
+def test_web_reels_uses_clips_container_and_pagination_queries(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    node = {
+        "__typename": "XDTMediaDict",
+        "id": "3945708384929752347_340804338",
+        "pk": "3945708384929752347",
+        "code": "DbB-N7vBKUb",
+        "media_type": 2,
+        "user": {"pk": "340804338", "username": "giovanni", "is_verified": True, "profile_pic_url": "u"},
+        "has_liked": False,
+        "like_count": 109714,
+        "comment_count": 219,
+        "view_count": None,
+        "caption": {"text": "a caption"},
+        "organic_tracking_token": "trk",
+        "image_versions2": {"candidates": [{"width": 720, "url": "https://cdn/img.jpg"}]},
+        "video_versions": [{"type": 101, "url": "https://cdn/video.mp4"}],
+        "clips_metadata": {"music_info": {"music_asset_info": {"display_artist": "pupsies", "title": "misery."}}},
+    }
+    payload = {
+        "data": {
+            "xdt_api__v1__clips__home__connection_v2": {
+                "edges": [{"node": {"media": node}}],
+                "page_info": {"end_cursor": "CURSOR2", "has_next_page": True},
+            }
+        }
+    }
+    fake = InteractionFakeRequests(payload)
+    monkeypatch.setattr(engine_module, "requests", fake)
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    cookies = {"sessionid": "s", "ds_user_id": "42"}
+
+    cold = engine.dispatch("web.reels", {"cookies": cookies})
+    assert cold["hasMore"] is True
+    assert cold["nextCursor"] == "CURSOR2"
+    reel = cold["items"][0]
+    assert reel["id"] == "3945708384929752347_340804338"
+    assert reel["videoUrl"] == "https://cdn/video.mp4"
+    assert reel["imageUrl"] == "https://cdn/img.jpg"
+    assert reel["kind"] == "video"
+    assert reel["likeCount"] == 109714
+    assert reel["audio"] == "pupsies · misery."
+    assert reel["trackingToken"] == "trk"
+    assert reel["user"]["username"] == "giovanni"
+    cold_body = fake.graphql_posts()[0]["data"]
+    assert cold_body["fb_api_req_friendly_name"] == "PolarisClipsTabDesktopContainerQuery"
+    assert cold_body["doc_id"] == "27865048666517472"
+
+    fake.calls.clear()
+    page = engine.dispatch(
+        "web.reels", {"cookies": cookies, "cursor": "CURSOR2", "seenIds": ["3945708384929752347"]}
+    )
+    assert page["items"][0]["code"] == "DbB-N7vBKUb"
+    page_body = fake.graphql_posts()[0]["data"]
+    assert page_body["fb_api_req_friendly_name"] == "PolarisClipsTabDesktopPaginationQuery"
+    assert page_body["doc_id"] == "28115468621393196"
+    assert '"after":"CURSOR2"' in page_body["variables"]
+    assert '\\"id\\":\\"3945708384929752347\\"' in page_body["variables"]
+
+
+def test_web_share_targets_returns_threads_with_avatars(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    payload = {
+        "data": {
+            "get_paginated_share_sheet_ranked_items": {
+                "ranked_items": [
+                    {
+                        "thread_id": "340282366841710301281153316830215541743",
+                        "thread_title": "AMM Ventures, LLC",
+                        "users": [{"profile_pic_url": "a"}, {"profile_pic_url": "b"}],
+                    },
+                    {
+                        "thread_id": "111",
+                        "thread_title": "solo",
+                        "users": [{"profile_pic_url": "c"}],
+                    },
+                ]
+            }
+        }
+    }
+    fake = InteractionFakeRequests(payload)
+    monkeypatch.setattr(engine_module, "requests", fake)
+    engine = ProtocolEngine(client_factory=ClientFactory())
+
+    result = engine.dispatch("web.share_targets", {"cookies": {"sessionid": "s", "ds_user_id": "42"}})
+    first, second = result["items"]
+    assert first["threadId"] == "340282366841710301281153316830215541743"
+    assert first["title"] == "AMM Ventures, LLC"
+    assert first["avatars"] == ["a", "b"]
+    assert first["isGroup"] is True
+    assert second["isGroup"] is False
+    body = fake.graphql_posts()[0]["data"]
+    assert body["fb_api_req_friendly_name"] == "PolarisShareSheetV3NullStateQuery"
+    assert body["doc_id"] == "36651079954537487"
+
+
 def test_web_translate_unavailable_is_safe(monkeypatch) -> None:
     from speedgram_protocol import engine as engine_module
 
@@ -802,6 +1001,194 @@ def test_web_translate_unavailable_is_safe(monkeypatch) -> None:
             {"cookies": {"sessionid": "s", "ds_user_id": "42"}, "messageId": "mid.$a", "text": "x"},
         )
     assert error.value.code == "translate_unavailable"
+
+
+def test_web_comment_like_and_unlike_use_har_contracts(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    fake = InteractionFakeRequests({"data": {"xig_comment_like": {"ok": True}}})
+    monkeypatch.setattr(engine_module, "requests", fake)
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    cookies = {"sessionid": "s", "ds_user_id": "42"}
+
+    liked = engine.dispatch("web.comment_like", {"cookies": cookies, "commentId": "180123"})
+    assert liked == {"liked": True, "commentId": "180123"}
+    post = fake.graphql_posts()[-1]
+    assert post["data"]["fb_api_req_friendly_name"] == "PolarisCommentActionsLikeMutation"
+    assert post["data"]["doc_id"] == "27184292767848867"
+    assert '"comment_id":"180123"' in post["data"]["variables"]
+    assert '"actor_id":"17841450859296213"' in post["data"]["variables"]
+
+    unliked = engine.dispatch("web.comment_unlike", {"cookies": cookies, "commentId": "180123"})
+    assert unliked == {"liked": False, "commentId": "180123"}
+    rest = fake.rest_posts()[-1]
+    assert rest["url"].endswith("/api/v1/media/180123/comment_unlike/")
+
+
+def test_web_follow_and_unfollow_use_har_contracts(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    fake = InteractionFakeRequests(
+        {
+            "data": {
+                "xdt_create_friendship": {
+                    "friendship_status": {"following": True, "outgoing_request": False}
+                }
+            }
+        }
+    )
+    monkeypatch.setattr(engine_module, "requests", fake)
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    cookies = {"sessionid": "s", "ds_user_id": "42"}
+
+    followed = engine.dispatch("web.follow", {"cookies": cookies, "userId": "99"})
+    assert followed == {"following": True, "outgoingRequest": False, "userId": "99"}
+    post = fake.graphql_posts()[-1]
+    assert post["data"]["fb_api_req_friendly_name"] == "usePolarisFollowMutation"
+    assert post["data"]["doc_id"] == "26508036048874888"
+    assert '"target_user_id":"99"' in post["data"]["variables"]
+
+    fake.graphql_payload = {
+        "data": {
+            "xdt_destroy_friendship": {
+                "friendship_status": {"following": False, "outgoing_request": False}
+            }
+        }
+    }
+    unfollowed = engine.dispatch("web.unfollow", {"cookies": cookies, "userId": "99"})
+    assert unfollowed == {"following": False, "outgoingRequest": False, "userId": "99"}
+    unfollow_post = fake.graphql_posts()[-1]
+    assert unfollow_post["data"]["fb_api_req_friendly_name"] == "usePolarisUnfollowMutation"
+    assert unfollow_post["data"]["doc_id"] == "27789106940691111"
+
+
+def test_web_activity_uses_news_inbox(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    inbox = {
+        "new_stories": [
+            {
+                "pk": "n1",
+                "notif_name": "private_user_follow_request",
+                "args": {
+                    "text": "maya requested to follow you.",
+                    "profile_name": "maya",
+                    "profile_id": "7",
+                    "profile_image": "https://cdn/p.jpg",
+                    "timestamp": 1_700_000_000,
+                    "inline_follow": {
+                        "user_info": {
+                            "id": "7",
+                            "username": "maya",
+                            "friendship_status": {
+                                "following": False,
+                                "followed_by": False,
+                                "incoming_request": True,
+                                "outgoing_request": False,
+                            },
+                        }
+                    },
+                },
+            }
+        ],
+        "old_stories": [
+            {
+                "pk": "o1",
+                "notif_name": "user_followed",
+                "args": {
+                    "text": "maya started following you.",
+                    "profile_name": "maya",
+                    "profile_id": "7",
+                    "timestamp": 1_699_000_000,
+                    "media": [{"image": "https://cdn/t.jpg"}],
+                    "inline_follow": {
+                        "user_info": {
+                            "friendship_status": {
+                                "following": False,
+                                "followed_by": True,
+                                "incoming_request": False,
+                                "outgoing_request": False,
+                            }
+                        }
+                    },
+                },
+            }
+        ],
+    }
+    fake = InteractionFakeRequests(rest_payload=inbox)
+    monkeypatch.setattr(engine_module, "requests", fake)
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    result = engine.dispatch("web.activity", {"cookies": {"sessionid": "s", "ds_user_id": "42"}})
+
+    assert result["items"][0]["unread"] is True
+    assert result["items"][0]["kind"] == "private_user_follow_request"
+    assert result["items"][0]["incomingRequest"] is True
+    assert result["items"][0]["userId"] == "7"
+    assert result["items"][1]["unread"] is False
+    assert result["items"][1]["followedBy"] is True
+    assert result["items"][1]["thumbnailUrl"] == "https://cdn/t.jpg"
+    rest = fake.rest_posts()[-1]
+    assert rest["url"].endswith("/api/v1/news/inbox/")
+    assert "fb_dtsg" in rest["data"]
+    assert "jazoest" in rest["data"]
+
+
+def test_web_follow_request_approve_and_decline(monkeypatch) -> None:
+    from speedgram_protocol import engine as engine_module
+
+    fake = InteractionFakeRequests(
+        rest_payload={"friendship_status": {"incoming_request": False, "followed_by": True}}
+    )
+    monkeypatch.setattr(engine_module, "requests", fake)
+    engine = ProtocolEngine(client_factory=ClientFactory())
+    cookies = {"sessionid": "s", "ds_user_id": "42"}
+
+    approved = engine.dispatch("web.follow_request_approve", {"cookies": cookies, "userId": "7"})
+    assert approved["followedBy"] is True
+    assert approved["incomingRequest"] is False
+    assert fake.rest_posts()[-1]["url"].endswith("/api/v1/friendships/approve/7/")
+
+    fake.rest_payload = {"friendship_status": {"incoming_request": False, "followed_by": False}}
+    declined = engine.dispatch("web.follow_request_decline", {"cookies": cookies, "userId": "7"})
+    assert declined["followedBy"] is False
+    assert fake.rest_posts()[-1]["url"].endswith("/api/v1/friendships/ignore/7/")
+
+
+def test_mobile_comment_like_and_follow(monkeypatch) -> None:
+    engine, client = _authenticated_engine()
+    liked: list[str] = []
+    followed: list[str] = []
+    approved: list[str] = []
+    client.comment_like = lambda comment_id: liked.append(comment_id) or True
+    client.comment_unlike = lambda comment_id: liked.append(f"u:{comment_id}") or True
+    client.user_follow = lambda user_id: followed.append(user_id) or True
+    client.user_unfollow = lambda user_id: followed.append(f"u:{user_id}") or True
+    client.user_follow_request_approve = lambda user_id: approved.append(user_id) or True
+    client.user_follow_request_decline = lambda user_id: approved.append(f"d:{user_id}") or True
+
+    assert engine.dispatch("media.comment_like", {"commentId": "c1"}) == {
+        "liked": True,
+        "commentId": "c1",
+    }
+    assert engine.dispatch("media.comment_unlike", {"commentId": "c1"}) == {
+        "liked": False,
+        "commentId": "c1",
+    }
+    assert engine.dispatch("user.follow", {"userId": "7"}) == {
+        "following": True,
+        "outgoingRequest": False,
+        "userId": "7",
+    }
+    assert engine.dispatch("user.unfollow", {"userId": "7"}) == {
+        "following": False,
+        "outgoingRequest": False,
+        "userId": "7",
+    }
+    assert engine.dispatch("user.follow_request_approve", {"userId": "9"})["ok"] is True
+    assert engine.dispatch("user.follow_request_decline", {"userId": "9"})["ok"] is True
+    assert liked == ["c1", "u:c1"]
+    assert followed == ["7", "u:7"]
+    assert approved == ["9", "d:9"]
 
 
 def test_timeline_preserves_engagement_tokens() -> None:

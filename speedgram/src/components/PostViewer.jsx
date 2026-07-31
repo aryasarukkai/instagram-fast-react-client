@@ -9,24 +9,67 @@ import {
   X,
 } from 'lucide-react';
 import PropTypes from 'prop-types';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { nativeClient } from '../nativeClient';
-import { exactCount, relativeTime } from '../format';
+import { compactCount, exactCount, relativeTime } from '../format';
 import { useResource } from '../useResource';
 import ModalPortal from './ModalPortal';
 import Visual, { Avatar } from './Visual';
 
-const Comment = ({ comment }) => (
-  <article className="viewer-comment">
-    <Avatar src={comment.user.profilePictureUrl} username={comment.user.username} size={34} />
-    <div>
-      <p><strong>{comment.user.username}</strong> {comment.text}</p>
-      <span>{relativeTime(comment.createdAt)}{comment.likeCount ? ` · ${comment.likeCount} likes` : ''}</span>
-    </div>
-  </article>
-);
+const Comment = ({ comment, onError }) => {
+  const [liked, setLiked] = useState(Boolean(comment.liked));
+  const [likeCount, setLikeCount] = useState(comment.likeCount || 0);
+  const [busy, setBusy] = useState(false);
 
-Comment.propTypes = { comment: PropTypes.object.isRequired };
+  const toggleLike = async () => {
+    if (busy || !comment.id) return;
+    const next = !liked;
+    setLiked(next);
+    setLikeCount((count) => Math.max(0, count + (next ? 1 : -1)));
+    setBusy(true);
+    try {
+      if (next) await nativeClient.likeComment(comment.id);
+      else await nativeClient.unlikeComment(comment.id);
+    } catch (error) {
+      setLiked(!next);
+      setLikeCount((count) => Math.max(0, count + (next ? -1 : 1)));
+      onError?.(error?.message || 'Comment like failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <article className="viewer-comment">
+      <Link to={`/profile/${comment.user.username}`} className="viewer-comment-avatar">
+        <Avatar src={comment.user.profilePictureUrl} username={comment.user.username} size={34} />
+      </Link>
+      <div>
+        <p>
+          <Link to={`/profile/${comment.user.username}`}><strong>{comment.user.username}</strong></Link>
+          {' '}
+          {comment.text}
+        </p>
+        <span>
+          {relativeTime(comment.createdAt)}
+          {likeCount ? ` · ${compactCount.format(likeCount)} likes` : ''}
+        </span>
+      </div>
+      <button
+        className={`viewer-comment-like${liked ? ' is-liked' : ''}`}
+        type="button"
+        disabled={busy}
+        onClick={toggleLike}
+        aria-label={liked ? `Unlike ${comment.user.username}'s comment` : `Like ${comment.user.username}'s comment`}
+      >
+        <Heart size={14} fill={liked ? 'currentColor' : 'none'} />
+      </button>
+    </article>
+  );
+};
+
+Comment.propTypes = { comment: PropTypes.object.isRequired, onError: PropTypes.func };
 
 const LikeSummary = ({ likedBy, likeCount }) => {
   const named = likedBy.find((user) => user.username);
@@ -56,9 +99,24 @@ const PostViewer = ({ post, onClose, onShare }) => {
   const [likeCount, setLikeCount] = useState(post.likeCount || 0);
   const [busy, setBusy] = useState(null);
   const [actionError, setActionError] = useState(null);
+  const [following, setFollowing] = useState(null);
+  const [outgoing, setOutgoing] = useState(false);
+  const [followBusy, setFollowBusy] = useState(false);
   const closeRef = useRef(null);
   const media = post.imageUrl || post.children?.[0]?.imageUrl;
   const video = post.videoUrl || post.children?.[0]?.videoUrl;
+  const isSelf = Boolean(
+    post.user?.username
+    && authState.user?.username
+    && post.user.username === authState.user.username,
+  );
+  const resolvedFollowing = following ?? Boolean(post.user?.following);
+  const resolvedOutgoing = following == null ? Boolean(post.user?.outgoingRequest) : outgoing;
+  const showFollow = Boolean(post.user?.id)
+    && !isSelf
+    && Boolean(post.user?.friendshipKnown)
+    && !resolvedFollowing
+    && !resolvedOutgoing;
 
   const commentsLoader = useCallback(() => nativeClient.comments(post.id), [post.id]);
   const comments = useResource(commentsLoader);
@@ -106,6 +164,35 @@ const PostViewer = ({ post, onClose, onShare }) => {
     }
   };
 
+  const toggleFollow = async () => {
+    if (!post.user?.id || followBusy || isSelf) return;
+    const wasFollowing = resolvedFollowing;
+    const wasOutgoing = resolvedOutgoing;
+    setFollowing(!wasFollowing && !wasOutgoing);
+    setOutgoing(false);
+    setFollowBusy(true);
+    setActionError(null);
+    try {
+      if (wasFollowing || wasOutgoing) {
+        const result = await nativeClient.unfollow(post.user.id);
+        setFollowing(Boolean(result.following));
+        setOutgoing(Boolean(result.outgoingRequest));
+      } else {
+        const result = await nativeClient.follow(post.user.id);
+        setFollowing(Boolean(result.following));
+        setOutgoing(Boolean(result.outgoingRequest));
+      }
+    } catch (error) {
+      setFollowing(wasFollowing);
+      setOutgoing(wasOutgoing);
+      setActionError(error?.message || 'Follow action failed.');
+    } finally {
+      setFollowBusy(false);
+    }
+  };
+
+  const followLabel = resolvedFollowing ? 'Following' : (resolvedOutgoing ? 'Requested' : 'Follow');
+
   return <ModalPortal>
     <div className="post-viewer-scrim" role="dialog" aria-modal="true" aria-label={`Post by ${post.user?.username || 'Instagram user'}`}>
       <button className="post-viewer-dismiss" type="button" onClick={onClose} aria-label="Close post" />
@@ -131,11 +218,23 @@ const PostViewer = ({ post, onClose, onShare }) => {
 
         <aside className="post-viewer-panel">
           <header className="post-viewer-head">
-            <Avatar src={post.user?.profilePictureUrl} username={post.user?.username} size={38} ring="story" />
-            <div>
-              <strong>{post.user?.username || 'instagram'}</strong>
-              {post.location || post.audio ? <small>{post.location || post.audio}</small> : null}
-            </div>
+            <Link to={`/profile/${post.user?.username || ''}`} className="post-viewer-identity">
+              <Avatar src={post.user?.profilePictureUrl} username={post.user?.username} size={38} ring="story" />
+              <div>
+                <strong>{post.user?.username || 'instagram'}</strong>
+                {post.location || post.audio ? <small>{post.location || post.audio}</small> : null}
+              </div>
+            </Link>
+            {!isSelf && post.user?.id && (resolvedFollowing || resolvedOutgoing || showFollow) ? (
+              <button
+                type="button"
+                className={`post-viewer-follow${resolvedFollowing || resolvedOutgoing ? ' is-following' : ''}`}
+                disabled={followBusy}
+                onClick={toggleFollow}
+              >
+                {followBusy ? '…' : followLabel}
+              </button>
+            ) : null}
             <button className="icon-button" type="button" disabled aria-label="More options"><MoreHorizontal size={19} /></button>
           </header>
 
@@ -157,7 +256,9 @@ const PostViewer = ({ post, onClose, onShare }) => {
             {!comments.loading && !comments.error && !comments.data?.items?.length ? (
               <div className="viewer-empty"><MessageCircle size={24} /><strong>No comments yet</strong><span>Be the first to start the conversation.</span></div>
             ) : null}
-            {(comments.data?.items || []).map((comment) => <Comment key={comment.id} comment={comment} />)}
+            {(comments.data?.items || []).map((comment) => (
+              <Comment key={comment.id} comment={comment} onError={setActionError} />
+            ))}
           </div>
 
           <footer className="post-viewer-footer">

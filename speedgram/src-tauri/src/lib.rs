@@ -88,6 +88,8 @@ struct TimelineInput {
 struct ReelsInput {
     cursor: Option<String>,
     source: Option<String>,
+    #[serde(default)]
+    seen_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -151,7 +153,10 @@ struct ReactInput {
 #[serde(rename_all = "camelCase")]
 struct ShareMediaInput {
     media_id: String,
-    user_id: String,
+    #[serde(default)]
+    thread_id: Option<String>,
+    #[serde(default)]
+    user_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -168,6 +173,26 @@ struct TranslateInput {
     message_id: String,
     text: String,
     dialect: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommentEngageInput {
+    comment_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommentRepliesInput {
+    media_id: String,
+    comment_id: String,
+    cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FollowInput {
+    user_id: String,
 }
 
 #[derive(Deserialize)]
@@ -525,6 +550,17 @@ async fn feed_stories(state: State<'_, AppState>) -> Result<Value, CommandError>
 
 #[tauri::command]
 async fn feed_reels(input: ReelsInput, state: State<'_, AppState>) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.reels",
+                json!({ "cookies": cookies, "cursor": input.cursor, "seenIds": input.seen_ids }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
     call_with_restore(
         &state,
         "feed.reels",
@@ -560,6 +596,28 @@ async fn media_comments(
         json!({ "mediaId": input.media_id }),
     )
     .await
+}
+
+#[tauri::command]
+async fn media_comment_replies(
+    input: CommentRepliesInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    let payload = json!({
+        "mediaId": input.media_id,
+        "commentId": input.comment_id,
+        "cursor": input.cursor,
+    });
+    if let Some(cookies) = web_session_cookies(&state)? {
+        let mut web_payload = payload.clone();
+        web_payload["cookies"] = cookies;
+        return state
+            .sidecar
+            .call("web.comment_replies", web_payload, false)
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(&state, "media.comment_replies", payload).await
 }
 
 #[tauri::command]
@@ -612,6 +670,13 @@ async fn user_medias(
 
 #[tauri::command]
 async fn activity_inbox(state: State<'_, AppState>) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call("web.activity", json!({ "cookies": cookies }), false)
+            .await
+            .map_err(CommandError::from);
+    }
     call_with_restore(&state, "activity.inbox", json!({})).await
 }
 
@@ -692,6 +757,20 @@ async fn direct_presence(state: State<'_, AppState>) -> Result<Value, CommandErr
         return Ok(json!({ "users": {} }));
     }
     call_with_restore(&state, "direct.presence", json!({})).await
+}
+
+#[tauri::command]
+async fn direct_share_targets(state: State<'_, AppState>) -> Result<Value, CommandError> {
+    // Ranked share-sheet recipients are a web-only surface; the renderer falls back
+    // to the Direct inbox when this is unavailable.
+    let Some(cookies) = web_session_cookies(&state)? else {
+        return Err(web_session_required());
+    };
+    state
+        .sidecar
+        .call("web.share_targets", json!({ "cookies": cookies }), false)
+        .await
+        .map_err(CommandError::from)
 }
 
 fn web_session_required() -> CommandError {
@@ -793,6 +872,137 @@ async fn media_unsave(
 }
 
 #[tauri::command]
+async fn media_comment_like(
+    input: CommentEngageInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.comment_like",
+                json!({ "cookies": cookies, "commentId": input.comment_id }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(
+        &state,
+        "media.comment_like",
+        json!({ "commentId": input.comment_id }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn media_comment_unlike(
+    input: CommentEngageInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.comment_unlike",
+                json!({ "cookies": cookies, "commentId": input.comment_id }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(
+        &state,
+        "media.comment_unlike",
+        json!({ "commentId": input.comment_id }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn user_follow(input: FollowInput, state: State<'_, AppState>) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.follow",
+                json!({ "cookies": cookies, "userId": input.user_id }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(&state, "user.follow", json!({ "userId": input.user_id })).await
+}
+
+#[tauri::command]
+async fn user_unfollow(
+    input: FollowInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.unfollow",
+                json!({ "cookies": cookies, "userId": input.user_id }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(&state, "user.unfollow", json!({ "userId": input.user_id })).await
+}
+
+#[tauri::command]
+async fn user_follow_request_approve(
+    input: FollowInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.follow_request_approve",
+                json!({ "cookies": cookies, "userId": input.user_id }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(
+        &state,
+        "user.follow_request_approve",
+        json!({ "userId": input.user_id }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn user_follow_request_decline(
+    input: FollowInput,
+    state: State<'_, AppState>,
+) -> Result<Value, CommandError> {
+    if let Some(cookies) = web_session_cookies(&state)? {
+        return state
+            .sidecar
+            .call(
+                "web.follow_request_decline",
+                json!({ "cookies": cookies, "userId": input.user_id }),
+                false,
+            )
+            .await
+            .map_err(CommandError::from);
+    }
+    call_with_restore(
+        &state,
+        "user.follow_request_decline",
+        json!({ "userId": input.user_id }),
+    )
+    .await
+}
+
+#[tauri::command]
 async fn direct_mark_read(
     input: MarkReadInput,
     state: State<'_, AppState>,
@@ -866,6 +1076,7 @@ async fn direct_share_media(
             json!({
                 "cookies": cookies,
                 "mediaId": input.media_id,
+                "threadId": input.thread_id,
                 "userId": input.user_id,
             }),
             false,
@@ -1319,6 +1530,7 @@ pub fn run() {
             feed_reels,
             feed_explore,
             media_comments,
+            media_comment_replies,
             user_profile,
             user_medias,
             activity_inbox,
@@ -1327,10 +1539,17 @@ pub fn run() {
             direct_send,
             direct_notes,
             direct_presence,
+            direct_share_targets,
             media_like,
             media_unlike,
             media_save,
             media_unsave,
+            media_comment_like,
+            media_comment_unlike,
+            user_follow,
+            user_unfollow,
+            user_follow_request_approve,
+            user_follow_request_decline,
             direct_mark_read,
             direct_react,
             direct_share_media,
